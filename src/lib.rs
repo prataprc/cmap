@@ -1,192 +1,193 @@
 use std::{
     borrow::Borrow,
+    hash::Hash,
     sync::{
         atomic::{AtomicPtr, Ordering::SeqCst},
-        Arc,
+        mpsc,
     },
 };
 
-/// This is total magic !!!
+const SLOT_MASK: u64 = 0xff;
+
+type ReclaimTx<K, V> = mpsc::Sender<Reclaim<K, V>>;
+
+enum Reclaim<K, V> {
+    Value { epoch: u64, value: Box<V> },
+    Entry { epoch: u64, entry: Box<Entry<K, V>> },
+}
 
 enum Entry<K, V> {
     S {
-        next: AtomicPtr<Arc<Entry<K, V>>>,
+        next: AtomicPtr<Entry<K, V>>,
     },
     E {
         key: K,
-        value: AtomicPtr<Arc<V>>,
-        next: AtomicPtr<Arc<Entry<K, V>>>,
+        value: AtomicPtr<V>,
+        next: AtomicPtr<Entry<K, V>>,
     },
     N,
 }
 
 impl<K, V> Entry<K, V> {
-    fn new() -> Box<Arc<Entry<K, V>>> {
+    fn new_list() -> Box<Entry<K, V>> {
+        // create 2 sentinels, wire them up and return.
         let tail = {
             let entry = Entry::S {
-                next: AtomicPtr::new(Box::leak(Box::new(Arc::new(Entry::N)))),
+                next: AtomicPtr::new(Box::leak(Box::new(Entry::N))),
             };
-            Box::new(Arc::new(entry))
+            Box::new(entry)
         };
 
         let head = Entry::S {
             next: AtomicPtr::new(Box::leak(tail)),
         };
 
-        Box::new(Arc::new(head))
+        Box::new(head)
     }
 
-    fn new_entry(key: K, value: Box<Arc<V>>, next: Box<Arc<Entry<K, V>>>) -> Box<Arc<Entry<K, V>>> {
-        let entry = Entry::E {
-            key,
-            value: AtomicPtr::new(Box::leak(value)),
-            next: AtomicPtr::new(Box::leak(next)),
-        };
-
-        Box::new(Arc::new(entry))
-    }
-
-    fn drop_fields(&self) {
-        match self {
-            Entry::S { next } => unsafe {
-                let ptr = next.load(SeqCst).as_ref().unwrap();
-                let _next = Arc::from_raw(Arc::as_ptr(ptr));
-            },
-            Entry::E { value, next, .. } => unsafe {
-                let ptr = next.load(SeqCst).as_ref().unwrap();
-                let _next = Arc::from_raw(Arc::as_ptr(ptr));
-                let ptr = value.load(SeqCst).as_ref().unwrap();
-                let _value = Arc::from_raw(Arc::as_ptr(ptr));
-            },
-            Entry::N => (),
-        }
+    fn new(key: K, value: Box<V>, next: *mut Entry<K, V>) -> Box<Entry<K, V>> {
+        let value = AtomicPtr::new(Box::leak(value));
+        let next = AtomicPtr::new(next);
+        Box::new(Entry::E { key, value, next })
     }
 }
 
 impl<K, V> Entry<K, V> {
-    fn len(entry: Arc<Entry<K, V>>) -> usize {
-        let mut count = 0;
-        let mut node = entry.to_next().unwrap();
-
-        while let Some(n) = node.to_next() {
-            node = n;
-            count += 1;
-        }
-
-        count
-    }
-
-    fn get<Q>(entry: Arc<Entry<K, V>>, key: &Q) -> Option<Arc<V>>
+    fn get<Q>(head: &Entry<K, V>, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
         V: Clone,
         Q: PartialEq + ?Sized,
     {
-        let mut node: Option<Arc<Entry<K, V>>> = entry.to_next(); // skip sentinel
+        'retry: loop {
+            // head must be entry list's first sentinel, skip it.
+            let mut parent: &Entry<K, V> = head;
+            let mut node: Option<*mut Entry<K, V>> = head.as_next_ptr();
 
-        loop {
-            node = match node {
-                Some(entry) => match entry.borrow_key::<Q>() {
-                    Some(entry_key) if entry_key == key => break Some(entry.to_value()),
-                    _ => entry.to_next(),
-                },
-                None => break None,
+            loop {
+                match node {
+                    Some(entry) if istagged(entry) => continue 'retry,
+                    Some(entry) => {
+                        let entry = unsafe { entry.as_ref().unwrap() };
+                        match entry.borrow_key::<Q>() {
+                            Some(ekey) if ekey == key => {
+                                break 'retry Some(entry.as_value().clone());
+                            }
+                            Some(_) => {
+                                parent = entry;
+                                node = entry.as_next_ptr();
+                            }
+                            None => break 'retry None,
+                        }
+                    }
+                    None => unreachable!(),
+                }
             }
         }
     }
 
-    fn set(entry: Arc<Entry<K, V>>, key: K, value: V) -> Option<Arc<V>>
+    fn set(head: &Entry<K, V>, key: K, value: V, epoch: u64, tx: ReclaimTx<K, V>) -> Option<Box<V>>
     where
         K: PartialEq + Clone,
         V: Clone,
     {
+        let mut value = Box::new(value);
+
         'retry: loop {
-            let mut node: Option<Arc<Entry<K, V>>> = entry.to_next(); // skip sentinel
-            let mut parent = Arc::clone(&entry);
+            // head must be entry list's first sentinel, skip it.
+            let mut parent: &Entry<K, V> = head;
+            let mut node: Option<*mut Entry<K, V>> = head.as_next_ptr(); // skip sentinel
 
             loop {
                 match node {
-                    Some(entr) => match entr.borrow_key::<K>() {
-                        Some(entry_key) if entry_key == &key => {
-                            let value = Box::new(Arc::new(value));
-                            let old_value = entr.set_value(value);
-                            return Some(old_value);
-                        }
-                        Some(_) => {
-                            node = entr.to_next();
-                            parent = entr;
-                        }
-                        None => match parent.as_ref() {
-                            Entry::E { next, .. } => {
-                                let old = untag(next.load(SeqCst));
-                                let entr = {
-                                    let value = Box::new(Arc::new(value.clone()));
-                                    Entry::new_entry(key.clone(), value, Box::new(entr))
+                    Some(entry) if istagged(entry) => continue 'retry,
+                    Some(entry) => {
+                        let entry = unsafe { entry.as_ref().unwrap() };
+                        match entry.borrow_key::<K>() {
+                            Some(entry_key) if entry_key == &key => {
+                                let old_value = entry.set_value(epoch, value, tx);
+                                break 'retry Some(old_value);
+                            }
+                            Some(_) => {
+                                parent = entry;
+                                node = entry.as_next_ptr();
+                            }
+                            None => {
+                                let next = match parent {
+                                    Entry::E { next, .. } => next,
+                                    Entry::S { .. } | Entry::N => unreachable!(),
                                 };
-                                let new = Box::leak(entr);
-                                if next.compare_and_swap(old, new, SeqCst) == old {
-                                    return None;
-                                } else {
-                                    let entr = unsafe { Box::from_raw(new) };
-                                    entr.drop_fields();
+
+                                let (key, old) = (key.clone(), node.unwrap());
+                                let new = Box::leak(Entry::new(key, value, old));
+                                if next.compare_and_swap(old, new, SeqCst) != old {
+                                    value = unsafe { Box::from_raw(new).take_value() };
                                     continue 'retry;
+                                } else {
+                                    break 'retry None;
                                 }
                             }
-                            Entry::S { .. } | Entry::N => unreachable!(),
-                        },
-                    },
+                        }
+                    }
                     None => unreachable!(),
                 }
             }
         }
     }
 
-    fn remove<Q>(entry: Arc<Entry<K, V>>, key: &Q) -> Option<Arc<V>>
+    fn remove<Q>(head: &Entry<K, V>, key: &Q, epoch: u64, tx: ReclaimTx<K, V>) -> Option<Box<V>>
     where
         K: Borrow<Q>,
         V: Clone,
         Q: PartialEq + ?Sized,
     {
         'retry: loop {
-            let mut node: Option<Arc<Entry<K, V>>> = entry.to_next(); // skip sentinel
-            let mut parent = Arc::clone(&entry);
+            // head must be entry list's first sentinel, skip it.
+            let mut parent: &Entry<K, V> = head;
+            let mut node: Option<*mut Entry<K, V>> = head.as_next_ptr(); // skip sentinel
 
             loop {
                 match node {
-                    Some(entr) => match entr.borrow_key::<Q>() {
-                        Some(entry_key) if entry_key == key => match entr.as_ref() {
-                            Entry::E { next, .. } => {
-                                // double CAS
-                                let old = untag(next.load(SeqCst));
-                                let new = tag(old);
-                                // first CAS
-                                if next.compare_and_swap(old, new, SeqCst) != old {
-                                    continue 'retry;
-                                }
-                                let new = untag(next.load(SeqCst));
-                                let old_value = Some(entr.to_value());
-                                // second CAS
-                                match parent.as_ref() {
-                                    Entry::E { next, .. } => {
-                                        let old = untag(next.load(SeqCst));
-                                        if next.compare_and_swap(old, new, SeqCst) == old {
-                                            entr.drop_fields();
-                                            return old_value;
-                                        } else {
-                                            continue 'retry;
-                                        }
+                    Some(entry) if istagged(entry) => continue 'retry,
+                    Some(entry) => {
+                        let entry = unsafe { entry.as_ref().unwrap() };
+                        match entry.borrow_key::<Q>() {
+                            Some(entry_key) if entry_key == key => match entry {
+                                Entry::E { next, .. } => {
+                                    // first CAS
+                                    let old = next.load(SeqCst);
+                                    let new = tag(old);
+                                    if next.compare_and_swap(old, new, SeqCst) != old {
+                                        continue 'retry;
                                     }
-                                    Entry::S { .. } | Entry::N => unreachable!(),
+                                    // second CAS
+                                    let new = untag(next.load(SeqCst));
+                                    let next = match parent {
+                                        Entry::E { next, .. } => next,
+                                        Entry::S { .. } | Entry::N => unreachable!(),
+                                    };
+                                    let old = node.unwrap();
+                                    if next.compare_and_swap(old, new, SeqCst) == old {
+                                        let entry = unsafe { Box::from_raw(old) };
+                                        let oval = Box::new(entry.as_value().clone());
+                                        tx.send(Reclaim::Entry {
+                                            epoch,
+                                            entry: entry,
+                                        });
+                                        return Some(oval);
+                                    } else {
+                                        continue 'retry;
+                                    }
                                 }
+                                Entry::S { .. } | Entry::N => unreachable!(),
+                            },
+                            Some(_) => {
+                                parent = entry;
+                                node = entry.as_next_ptr();
                             }
-                            Entry::S { .. } | Entry::N => unreachable!(),
-                        },
-                        Some(_) => {
-                            node = entr.to_next();
-                            parent = entr;
+                            None => return None,
                         }
-                        None => return None,
-                    },
+                    }
                     None => unreachable!(),
                 }
             }
@@ -195,26 +196,21 @@ impl<K, V> Entry<K, V> {
 }
 
 impl<K, V> Entry<K, V> {
-    fn set_value(&self, newval: Box<Arc<V>>) -> Arc<V> {
+    fn set_value(&self, epoch: u64, nval: Box<V>, chan: ReclaimTx<K, V>) -> Box<V>
+    where
+        V: Clone,
+    {
         match self {
             Entry::E { value, .. } => {
-                let old_value = unsafe {
-                    let v = value.load(SeqCst).as_ref().unwrap();
-                    Arc::from_raw(Arc::as_ptr(v))
-                };
-                value.store(Box::leak(newval), SeqCst);
+                let old_value = unsafe { Box::from_raw(value.load(SeqCst)) };
+                chan.send(Reclaim::Value {
+                    epoch,
+                    value: old_value.clone(),
+                });
+                value.store(Box::leak(nval), SeqCst);
                 old_value
             }
             Entry::S { .. } | Entry::N => unreachable!(),
-        }
-    }
-
-    fn set_next(&self, entry: Box<Arc<Entry<K, V>>>) {
-        match self {
-            Entry::S { next, .. } | Entry::E { next, .. } => {
-                next.store(Box::leak(entry), SeqCst);
-            }
-            Entry::N => unreachable!(),
         }
     }
 
@@ -230,66 +226,23 @@ impl<K, V> Entry<K, V> {
         }
     }
 
-    fn to_value(&self) -> Arc<V> {
+    fn as_value(&self) -> &V {
         match self {
-            Entry::E { value, .. } => {
-                let valref = unsafe { value.load(SeqCst).as_ref().unwrap() };
-                Arc::clone(valref)
-            }
+            Entry::E { value, .. } => unsafe { value.load(SeqCst).as_ref().unwrap() },
             _ => unreachable!(),
         }
     }
 
-    fn to_next(&self) -> Option<Arc<Entry<K, V>>> {
+    fn take_value(&self) -> Box<V> {
         match self {
-            Entry::S { next } | Entry::E { next, .. } => {
-                let ptr = next.load(SeqCst);
-                unsafe { Some(Arc::clone(untag(ptr).as_ref().unwrap())) }
-            }
-            Entry::N => None,
+            Entry::E { value, .. } => unsafe { Box::from_raw(value.load(SeqCst)) },
+            _ => unreachable!(),
         }
     }
 
-    fn to_next_location(&self) -> &AtomicPtr<Arc<Entry<K, V>>> {
+    fn as_next_ptr(&self) -> Option<*mut Entry<K, V>> {
         match self {
-            Entry::S { next } | Entry::E { next, .. } => next,
-            Entry::N => unreachable!(),
-        }
-    }
-
-    fn tag(&self) {
-        loop {
-            match self {
-                Entry::S { next } | Entry::E { next, .. } => {
-                    let ptr = next.load(SeqCst);
-                    let newptr = tag(ptr);
-                    if next.compare_and_swap(ptr, newptr, SeqCst) == ptr {
-                        break;
-                    }
-                }
-                Entry::N => break,
-            }
-        }
-    }
-
-    fn untag(&self) {
-        loop {
-            match self {
-                Entry::S { next } | Entry::E { next, .. } => {
-                    let ptr = next.load(SeqCst);
-                    let newptr = untag(ptr);
-                    if next.compare_and_swap(ptr, newptr, SeqCst) == ptr {
-                        break;
-                    }
-                }
-                Entry::N => break,
-            }
-        }
-    }
-
-    fn istagged(&self) -> Option<bool> {
-        match self {
-            Entry::S { next } | Entry::E { next, .. } => Some(istagged(next.load(SeqCst))),
+            Entry::S { next } | Entry::E { next, .. } => Some(next.load(SeqCst)),
             Entry::N => None,
         }
     }
@@ -309,4 +262,10 @@ fn untag<T>(ptr: *mut T) -> *mut T {
 fn istagged<T>(ptr: *mut T) -> bool {
     let ptr = ptr as u64;
     (ptr & 0x1) == 1
+}
+
+#[inline]
+fn hamming_distance(x: u128, y: u128) -> usize {
+    // TODO: optimize it with SSE or popcnt instructions, figure-out a way.
+    (x ^ y).count_ones() as usize
 }
