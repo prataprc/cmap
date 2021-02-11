@@ -1,13 +1,148 @@
+use fasthash::city;
+
 use std::{
     borrow::Borrow,
     hash::Hash,
     sync::{
-        atomic::{AtomicPtr, Ordering::SeqCst},
-        mpsc,
+        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
+        mpsc, RwLock,
     },
 };
 
 const SLOT_MASK: u64 = 0xff;
+
+pub struct Map<K, V, H> {
+    id: usize,
+    root: AtomicPtr<In<K, V>>,
+    epoch: AtomicU64,
+    access_log: RwLock<Vec<AtomicU64>>,
+}
+
+struct In<K, V> {
+    node: AtomicPtr<Node<K, V>>,
+}
+
+enum Node<K, V> {
+    Trie {
+        bmp: [u128; 2],
+        childs: Vec<AtomicPtr<Child<K, V>>>,
+    },
+    List {
+        head: AtomicPtr<Entry<K, V>>,
+    },
+}
+
+enum Child<K, V> {
+    Deep(In<K, V>),
+    Leaf(Entry<K, V>),
+}
+
+impl<K, V> Map<K, V> {
+    pub fn new() -> Map<K, V> {
+        let node = Box::new(Node::Trie {
+            bmp: [0_u128; 2],
+            childs: Vec::default(),
+        });
+        let root = Box::new(In {
+            node: AtomicPtr::new(Box::leak(node)),
+        });
+        Map {
+            id: 0,
+            root: AtomicPtr::new(Box::leak(root)),
+            epoch: AtomicU64::new(1),
+            access_log: RwLock::new(Vec::default()),
+        }
+    }
+
+    fn register_epoch(&self) {
+        let epoch = self.epoch.fetch_add(1);
+        let mut log = self.access_log.read().unwrap();
+        access[self.off].store(epoch);
+    }
+}
+
+impl<K, V> Map<K, V> {
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        V: Clone,
+        Q: PartialEq + ?Sized + Hash,
+    {
+        let ws = key_to_hashbits(key);
+
+        let _epoch = self.epoch.load(SeqCst);
+        let mut inode: &In<K, V> = self.root.load(SeqCst).as_ref().unwrap();
+
+        let value = loop {
+            inode = match (inode.node.load(SeqCst).as_ref().unwrap(), ws.pop()) {
+                (Node::Trie { bmp, childs }, Some(w)) => {
+                    let dist = hamming_distance(w, bmp.clone());
+                    let child = match dist {
+                        HammDistance::Set(n) => childs[n].load(SeqCst).as_ref().unwrap(),
+                        HammDistance::Insert(n) => break None,
+                    };
+                    match child {
+                        Child::Deep(inode) => inode,
+                        Child::Leaf(entry) if entry.borrow_key::<Q>() == key => {
+                            break Some(entry.as_value().clone());
+                        }
+                        Child::Leaf(entry) => break None,
+                    }
+                }
+                (Node::Trie { .. }, None) => unreachable!(),
+                (Node::List { head }, _) => break Entry::get(head, key),
+            }
+        };
+
+        self.register_epoch()
+
+        value
+    }
+
+    pub fn set<Q>(&self, key: K, value: V) -> Option<Box<V>>
+    where
+        K: PartialEq + Clone + Hash,
+        V: Clone,
+    {
+        let ws = key_to_hashbits(key);
+        let epoch = self.epoch.load(SeqCst);
+
+        let inode = self.root.load(SeqCst).as_ref().unwrap();
+        let node = inode.node.load(SeqCst).as_ref().unwrap();
+
+        match node {
+            Node::Trie { bmp, childs } => {
+                let w = ws.pop();
+                match hamming_distance(w, bmp.clone()) {
+                    HammDistance::Set(n) if ws.len() == 0 => (),
+                    HammDistance::Set(n) => (),
+                    HammDistance::Insert(n) if ws.len() == 0 => (),
+                    HammDistance::Insert(n) => (),
+                }
+            }
+            Node::List { head } => {
+                let head = head.load(SeqCst).as_ref().unwrap();
+                Entry::set(head, epoch, tx, key, value)
+            }
+            Node::Tomb { item } => todo!(),
+        }
+
+        self.register_epoch()
+    }
+
+    pub fn remove<Q>(&self, key: &Q) -> Option<Box<V>>
+    where
+        K: Borrow<Q>,
+        V: Clone,
+        Q: PartialEq + ?Sized,
+    {
+        todo!()
+    }
+}
+
+impl<K, V> In<K, V> {
+    fn lookup<Q>(inode: &In<K, V>, key: &Q) -> Option<V> {}
+}
 
 type ReclaimTx<K, V> = mpsc::Sender<Reclaim<K, V>>;
 
@@ -86,7 +221,7 @@ impl<K, V> Entry<K, V> {
         }
     }
 
-    fn set(head: &Entry<K, V>, key: K, value: V, epoch: u64, tx: ReclaimTx<K, V>) -> Option<Box<V>>
+    fn set(head: &Entry<K, V>, epoch: u64, tx: ReclaimTx<K, V>, key: K, value: V) -> Option<Box<V>>
     where
         K: PartialEq + Clone,
         V: Clone,
@@ -266,8 +401,36 @@ fn istagged<T>(ptr: *mut T) -> bool {
     (ptr & 0x1) == 1
 }
 
+enum HammDistance {
+    Insert(usize),
+    Set(usize),
+}
+
 #[inline]
-fn hamming_distance(x: u128, y: u128) -> usize {
+fn hamming_distance(w: u8, bmp: [u128; 2]) -> HammDistance {
+    let posn = 1 << w;
+    let mask = !(posn - 1);
+    let bmp: u128 = if w < 128 { bmp[0] } else { bmp[1] };
+
+    let (x, y) = ((bmp & mask), bmp);
     // TODO: optimize it with SSE or popcnt instructions, figure-out a way.
-    (x ^ y).count_ones() as usize
+    let dist = (x ^ y).count_ones() as usize;
+
+    match (bmp & posn) {
+        0 => HammDistance::Insert(dist),
+        _ => HammDistance::Set(dist),
+    }
+}
+
+#[inline]
+fn key_to_hashbits<Q>(key: &Q) -> Vec<u8>
+where
+    Q: Hash,
+{
+    let mut hasher = city::Hash32;
+    key.hash(&mut hasher);
+    let code: u64 = hasher.finish();
+
+    let mut ws: Vec<u8> = (0..8).map(|i| ((code >> (i * 8)) && 0xFF) as u8).collect();
+    ws.reverse();
 }
