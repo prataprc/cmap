@@ -66,16 +66,16 @@ impl<K, V> Entry<K, V> {
 
             loop {
                 match node {
-                    Some(entry) if istagged(entry) => continue 'retry,
-                    Some(entry) => {
-                        let entry = unsafe { entry.as_ref().unwrap() };
-                        match entry.borrow_key::<Q>() {
+                    Some(node_ptr) if istagged(node_ptr) => continue 'retry,
+                    Some(node_ptr) => {
+                        let node_ref = unsafe { node_ptr.as_ref().unwrap() };
+                        match node_ref.borrow_key::<Q>() {
                             Some(ekey) if ekey == key => {
-                                break 'retry Some(entry.as_value().clone());
+                                break 'retry Some(node_ref.as_value().clone());
                             }
                             Some(_) => {
-                                parent = entry;
-                                node = entry.as_next_ptr();
+                                parent = node_ref;
+                                node = node_ref.as_next_ptr();
                             }
                             None => break 'retry None,
                         }
@@ -93,6 +93,21 @@ impl<K, V> Entry<K, V> {
     {
         let mut value = Box::new(value);
 
+        let swing = |parent: &Entry<K, V>, old: *mut Entry<K, V>| -> bool {
+            let next = match parent {
+                Entry::E { next, .. } => next,
+                Entry::S { .. } | Entry::N => unreachable!(),
+            };
+
+            let new = Box::leak(Entry::new(key.clone(), value.clone(), old));
+            if next.compare_and_swap(old, new, SeqCst) == old {
+                return true;
+            } else {
+                let _value = unsafe { Box::from_raw(new).take_value() };
+                return false;
+            }
+        };
+
         'retry: loop {
             // head must be entry list's first sentinel, skip it.
             let mut parent: &Entry<K, V> = head;
@@ -100,33 +115,20 @@ impl<K, V> Entry<K, V> {
 
             loop {
                 match node {
-                    Some(entry) if istagged(entry) => continue 'retry,
-                    Some(entry) => {
-                        let entry = unsafe { entry.as_ref().unwrap() };
-                        match entry.borrow_key::<K>() {
+                    Some(node_ptr) if istagged(node_ptr) => continue 'retry,
+                    Some(node_ptr) => {
+                        let node_ref = unsafe { node_ptr.as_ref().unwrap() };
+                        match node_ref.borrow_key::<K>() {
                             Some(entry_key) if entry_key == &key => {
-                                let old_value = entry.set_value(epoch, value, tx);
+                                let old_value = node_ref.set_value(epoch, value, tx);
                                 break 'retry Some(old_value);
                             }
                             Some(_) => {
-                                parent = entry;
-                                node = entry.as_next_ptr();
+                                parent = node_ref;
+                                node = node_ref.as_next_ptr();
                             }
-                            None => {
-                                let next = match parent {
-                                    Entry::E { next, .. } => next,
-                                    Entry::S { .. } | Entry::N => unreachable!(),
-                                };
-
-                                let (key, old) = (key.clone(), node.unwrap());
-                                let new = Box::leak(Entry::new(key, value, old));
-                                if next.compare_and_swap(old, new, SeqCst) != old {
-                                    value = unsafe { Box::from_raw(new).take_value() };
-                                    continue 'retry;
-                                } else {
-                                    break 'retry None;
-                                }
-                            }
+                            None if swing(parent, node.unwrap()) => break 'retry None,
+                            None => continue 'retry,
                         }
                     }
                     None => unreachable!(),
@@ -148,33 +150,33 @@ impl<K, V> Entry<K, V> {
 
             loop {
                 match node {
-                    Some(entry) if istagged(entry) => continue 'retry,
-                    Some(entry) => {
-                        let entry = unsafe { entry.as_ref().unwrap() };
-                        match entry.borrow_key::<Q>() {
-                            Some(entry_key) if entry_key == key => match entry {
+                    Some(node_ptr) if istagged(node_ptr) => continue 'retry,
+                    Some(node_ptr) => {
+                        let node_ref = unsafe { node_ptr.as_ref().unwrap() };
+                        let next_ptr = match node_ref.as_next_ptr() {
+                            Some(next_ptr) if istagged(next_ptr) => continue 'retry,
+                            Some(next_ptr) => next_ptr,
+                            None => break 'retry None,
+                        };
+                        match node_ref.borrow_key::<Q>() {
+                            Some(entry_key) if entry_key == key => match node_ref {
                                 Entry::E { next, .. } => {
                                     // first CAS
-                                    let old = next.load(SeqCst);
-                                    let new = tag(old);
+                                    let (old, new) = (next_ptr, tag(next_ptr));
                                     if next.compare_and_swap(old, new, SeqCst) != old {
                                         continue 'retry;
                                     }
                                     // second CAS
-                                    let new = untag(next.load(SeqCst));
                                     let next = match parent {
                                         Entry::E { next, .. } => next,
                                         Entry::S { .. } | Entry::N => unreachable!(),
                                     };
-                                    let old = node.unwrap();
+                                    let (old, new) = (node.unwrap(), next_ptr);
                                     if next.compare_and_swap(old, new, SeqCst) == old {
                                         let entry = unsafe { Box::from_raw(old) };
                                         let oval = Box::new(entry.as_value().clone());
-                                        tx.send(Reclaim::Entry {
-                                            epoch,
-                                            entry: entry,
-                                        });
-                                        return Some(oval);
+                                        tx.send(Reclaim::Entry { epoch, entry });
+                                        break 'retry Some(oval);
                                     } else {
                                         continue 'retry;
                                     }
@@ -182,10 +184,10 @@ impl<K, V> Entry<K, V> {
                                 Entry::S { .. } | Entry::N => unreachable!(),
                             },
                             Some(_) => {
-                                parent = entry;
-                                node = entry.as_next_ptr();
+                                parent = node_ref;
+                                node = node_ref.as_next_ptr();
                             }
-                            None => return None,
+                            None => break 'retry None,
                         }
                     }
                     None => unreachable!(),
