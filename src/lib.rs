@@ -1,5 +1,6 @@
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
+#![feature(destructuring_assignment)]
 
 use std::{error, fmt, result};
 
