@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering::SeqCst},
 };
 
-use crate::gc::{self, Gc};
+use crate::gc::{self, Cas};
 
 pub enum Entry<K, V> {
     S {
@@ -18,36 +18,34 @@ pub enum Entry<K, V> {
 }
 
 impl<K, V> Entry<K, V> {
-    pub fn new(key: K, value: V, next: *mut Entry<K, V>) -> Box<Entry<K, V>> {
+    pub fn new(key: K, value: V, next: *mut Entry<K, V>) -> Entry<K, V> {
         let next = AtomicPtr::new(next);
-        Box::new(Entry::E { key, value, next })
-    }
-
-    pub fn new_list() -> Box<Entry<K, V>> {
-        // create 2 sentinels, wire them up and return.
-        let tail = {
-            let entry = Entry::S {
-                next: AtomicPtr::new(Box::leak(Box::new(Entry::N))),
-            };
-            Box::new(entry)
-        };
-
-        let head = Entry::S {
-            next: AtomicPtr::new(Box::leak(tail)),
-        };
-
-        Box::new(head)
-    }
-
-    pub fn new_leaf(key: K, value: V) -> Entry<K, V> {
-        let next = AtomicPtr::new(Box::leak(Box::new(Entry::N)));
         Entry::E { key, value, next }
     }
 
-    pub fn insert(&mut self, entry: *mut Entry<K, V>) {
+    pub fn update_next(&mut self, entry: *mut Entry<K, V>) {
         match self {
             Entry::S { next } => next.store(entry, SeqCst),
-            Entry::E { .. } | Entry::N => unreachable!(),
+            Entry::E { next, .. } => next.store(entry, SeqCst),
+            Entry::N => unreachable!(),
+        }
+    }
+
+    pub fn cloned(&self) -> Entry<K, V>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        match self {
+            Entry::E { key, value, next } => {
+                let next = AtomicPtr::new(next.load(SeqCst));
+                Entry::E {
+                    key: key.clone(),
+                    value: value.clone(),
+                    next,
+                }
+            }
+            Entry::S { .. } | Entry::N => unreachable!(),
         }
     }
 }
@@ -61,28 +59,27 @@ impl<K, V> Entry<K, V> {
     {
         'retry: loop {
             // head must be entry list's first sentinel, skip it.
-            let mut node: Option<*mut Entry<K, V>> = head.as_next_ptr();
+            let mut node_ptr: *mut Entry<K, V> = head.as_next_ptr().unwrap();
 
             loop {
-                match node {
-                    Some(node_ptr) if istagged(node_ptr) => continue 'retry,
-                    Some(node_ptr) => {
-                        let node_ref = unsafe { node_ptr.as_ref().unwrap() };
-                        match node_ref.borrow_key::<Q>() {
-                            Some(ekey) if ekey == key => {
-                                break 'retry Some(node_ref.as_value().clone());
-                            }
-                            Some(_) => node = node_ref.as_next_ptr(),
-                            None => break 'retry None,
-                        }
+                if istagged(node_ptr) {
+                    continue 'retry;
+                }
+
+                let node_ref = unsafe { node_ptr.as_ref().unwrap() };
+
+                node_ptr = match node_ref.borrow_key::<Q>() {
+                    Some(ekey) if ekey == key => {
+                        break 'retry Some(node_ref.as_value().clone());
                     }
-                    None => unreachable!(),
+                    Some(_) => node_ref.as_next_ptr().unwrap(),
+                    None => break 'retry None, // sentinel
                 }
             }
         }
     }
 
-    pub fn set(&self, nkey: K, nvalue: V, epoch: u64, gc: &Gc<K, V>) -> Option<V>
+    pub fn set(&self, nkey: &K, nvalue: &V, cas: &mut Cas<K, V>) -> Option<V>
     where
         K: PartialEq + Clone,
         V: Clone,
@@ -98,17 +95,16 @@ impl<K, V> Entry<K, V> {
                 }
 
                 match unsafe { node_ptr.as_ref().unwrap() } {
-                    Entry::E { key, value, next } if key == &nkey => {
-                        let mut cas = gc::Cas::new(epoch, &gc);
-                        let new = {
+                    Entry::E { key, value, next } if key == nkey => {
+                        let new_ptr = {
                             let next = AtomicPtr::new(next.load(SeqCst));
                             let (key, value) = (nkey.clone(), nvalue.clone());
                             let entry = Entry::E { key, value, next };
                             Box::leak(Box::new(entry))
                         };
                         cas.free_on_pass(gc::Mem::Entry(node_ptr));
-                        cas.free_on_fail(gc::Mem::Entry(new));
-                        if cas.swing(parent.as_atomicptr(), node_ptr, new) {
+                        cas.free_on_fail(gc::Mem::Entry(new_ptr));
+                        if cas.swing(parent.as_atomicptr(), node_ptr, new_ptr) {
                             break 'retry Some(value.clone());
                         } else {
                             continue 'retry;
@@ -119,15 +115,14 @@ impl<K, V> Entry<K, V> {
                         (node_ptr, next_ptr) = get_pointers(parent);
                     }
                     Entry::S { .. } => {
-                        let mut cas = gc::Cas::new(epoch, &gc);
-                        let new = {
+                        let new_ptr = {
                             let next = AtomicPtr::new(node_ptr);
                             let (key, value) = (nkey.clone(), nvalue.clone());
                             let entry = Entry::E { key, value, next };
                             Box::leak(Box::new(entry))
                         };
-                        cas.free_on_fail(gc::Mem::Entry(new));
-                        if cas.swing(parent.as_atomicptr(), node_ptr, new) {
+                        cas.free_on_fail(gc::Mem::Entry(new_ptr));
+                        if cas.swing(parent.as_atomicptr(), node_ptr, new_ptr) {
                             break 'retry None;
                         } else {
                             continue 'retry;
@@ -139,7 +134,7 @@ impl<K, V> Entry<K, V> {
         }
     }
 
-    pub fn remove<Q>(&self, dkey: &Q, epoch: u64, gc: &Gc<K, V>) -> Option<V>
+    pub fn remove<Q>(&self, dkey: &Q, cas: &mut Cas<K, V>) -> Option<V>
     where
         K: Borrow<Q>,
         V: Clone,
@@ -157,7 +152,6 @@ impl<K, V> Entry<K, V> {
 
                 match unsafe { node_ptr.as_ref().unwrap() } {
                     Entry::E { key, value, next } if key.borrow() == dkey => {
-                        let mut cas = gc::Cas::new(epoch, &gc);
                         // first CAS
                         let (old, new) = (next_ptr, tag(next_ptr));
                         if next.compare_and_swap(old, new, SeqCst) != old {
@@ -183,7 +177,7 @@ impl<K, V> Entry<K, V> {
 }
 
 impl<K, V> Entry<K, V> {
-    fn borrow_key<Q>(&self) -> Option<&Q>
+    pub fn borrow_key<Q>(&self) -> Option<&Q>
     where
         K: Borrow<Q>,
         Q: ?Sized,
@@ -195,7 +189,7 @@ impl<K, V> Entry<K, V> {
         }
     }
 
-    fn as_value(&self) -> &V {
+    pub fn as_value(&self) -> &V {
         match self {
             Entry::E { value, .. } => value,
             _ => unreachable!(),
@@ -227,11 +221,6 @@ fn tag<T>(ptr: *mut T) -> *mut T {
     let ptr = ptr as u64;
     assert!(ptr & 0x1 == 0);
     (ptr | 0x1) as *mut T
-}
-
-fn untag<T>(ptr: *mut T) -> *mut T {
-    let ptr = ptr as u64;
-    (ptr & !1) as *mut T
 }
 
 fn istagged<T>(ptr: *mut T) -> bool {

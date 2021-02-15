@@ -1,4 +1,4 @@
-use mkit::thread;
+use mkit::thread::{Rx, Tx};
 
 use std::{
     sync::{
@@ -9,59 +9,31 @@ use std::{
     time::Duration,
 };
 
-use crate::{entry::Entry, Error, Result};
+use crate::{entry::Entry, map::Child, map::Node};
 
 // CAS operation
 
-pub enum Mem<K, V> {
-    Entry(*mut Entry<K, V>),
-    // Node(*mut Node<K, V>),
-    // Child(*mut Child<K, V>),
-}
-
-impl<K, V> Mem<K, V> {
-    fn pass(self, epoch: u64, gc: &Gc<K, V>) {
-        match self {
-            //Mem::Node(ptr) => {
-            //    let _node = unsafe { Box::from_raw(ptr) };
-            //}
-            //Mem::Child(ptr) => {
-            //    let _child = unsafe { Box::from_raw(ptr) };
-            //}
-            Mem::Entry(ptr) => {
-                let entry = unsafe { Box::from_raw(ptr) };
-                let rclm = Reclaim::Entry { epoch, entry };
-                err_at!(GcFail, gc.post(rclm)).unwrap();
-            }
-        }
-    }
-
-    fn fail(self) {
-        match self {
-            //Mem::Node(ptr) => {
-            //    let _node = unsafe { Box::from_raw(ptr) };
-            //}
-            //Mem::Child(ptr) => {
-            //    let _child = unsafe { Box::from_raw(ptr) };
-            //}
-            Mem::Entry(ptr) => {
-                let _entry = unsafe { Box::from_raw(ptr) };
-            }
-        }
-    }
-}
+pub type Epochs = Arc<RwLock<Vec<Arc<AtomicU64>>>>;
 
 pub struct Cas<'a, K, V> {
-    epoch: u64,
+    epoch: Arc<AtomicU64>,
+    at: Arc<AtomicU64>,
     gc: &'a Gc<K, V>,
     pass: Vec<Mem<K, V>>,
     fail: Vec<Mem<K, V>>,
 }
 
+impl<'a, K, V> Drop for Cas<'a, K, V> {
+    fn drop(&mut self) {
+        self.at.store(self.epoch.load(SeqCst), SeqCst);
+    }
+}
+
 impl<'a, K, V> Cas<'a, K, V> {
-    pub fn new(epoch: u64, gc: &Gc<K, V>) -> Cas<K, V> {
+    pub fn new(epoch: Arc<AtomicU64>, at: Arc<AtomicU64>, gc: &'a Gc<K, V>) -> Self {
         Cas {
             epoch,
+            at,
             gc,
             pass: Vec::default(),
             fail: Vec::default(),
@@ -78,7 +50,7 @@ impl<'a, K, V> Cas<'a, K, V> {
 
     pub fn swing<T>(&mut self, loc: &AtomicPtr<T>, old: *mut T, new: *mut T) -> bool {
         if loc.compare_and_swap(old, new, SeqCst) == old {
-            let epoch = self.epoch;
+            let epoch = self.epoch.load(SeqCst);
             let gc = &self.gc;
             self.pass.drain(..).for_each(|mem| mem.pass(epoch, gc));
             true
@@ -89,29 +61,69 @@ impl<'a, K, V> Cas<'a, K, V> {
     }
 }
 
-pub enum Reclaim<K, V> {
-    Entry { epoch: u64, entry: Box<Entry<K, V>> },
-    // Node { epoch: u64, node: Box<Node<K, V>> },
+pub enum Mem<K, V> {
+    Entry(*mut Entry<K, V>),
+    Child(*mut Child<K, V>),
+    Node(*mut Node<K, V>),
 }
 
-pub type Gc<K, V> = thread::Tx<Reclaim<K, V>>;
+impl<K, V> Mem<K, V> {
+    fn pass(self, epoch: u64, gc: &Gc<K, V>) {
+        match self {
+            Mem::Entry(ptr) => {
+                let entry = unsafe { Box::from_raw(ptr) };
+                let rclm = Reclaim::Entry { epoch, entry };
+                gc.post(rclm).expect("ipc-fail");
+            }
+            Mem::Child(ptr) => {
+                let child = unsafe { Box::from_raw(ptr) };
+                let rclm = Reclaim::Child { epoch, child };
+                gc.post(rclm).expect("ipc-fail");
+            }
+            Mem::Node(ptr) => {
+                let node = unsafe { Box::from_raw(ptr) };
+                let rclm = Reclaim::Node { epoch, node };
+                gc.post(rclm).expect("ipc-fail");
+            }
+        }
+    }
+
+    fn fail(self) {
+        match self {
+            Mem::Entry(ptr) => {
+                let _entry = unsafe { Box::from_raw(ptr) };
+            }
+            Mem::Child(ptr) => {
+                let _child = unsafe { Box::from_raw(ptr) };
+            }
+            Mem::Node(ptr) => {
+                let _node = unsafe { Box::from_raw(ptr) };
+            }
+        }
+    }
+}
+
+pub enum Reclaim<K, V> {
+    Entry { epoch: u64, entry: Box<Entry<K, V>> },
+    Child { epoch: u64, child: Box<Child<K, V>> },
+    Node { epoch: u64, node: Box<Node<K, V>> },
+}
+
+pub type Gc<K, V> = Tx<Reclaim<K, V>>;
 
 pub struct GcThread<K, V> {
-    access_log: Arc<RwLock<Vec<AtomicU64>>>,
-    rx: thread::Rx<Reclaim<K, V>>,
+    access_log: Epochs,
+    rx: Rx<Reclaim<K, V>>,
 }
 
 impl<K, V> GcThread<K, V> {
-    fn new(
-        access_log: Arc<RwLock<Vec<AtomicU64>>>,
-        rx: thread::Rx<Reclaim<K, V>>,
-    ) -> GcThread<K, V> {
+    pub fn new(access_log: Epochs, rx: Rx<Reclaim<K, V>>) -> Self {
         GcThread { access_log, rx }
     }
 }
 
 impl<K, V> FnOnce<()> for GcThread<K, V> {
-    type Output = Result<()>;
+    type Output = ();
 
     extern "rust-call" fn call_once(self, _args: ()) -> Self::Output {
         let mut objs = vec![];
@@ -129,12 +141,20 @@ impl<K, V> FnOnce<()> for GcThread<K, V> {
             }
 
             let (gc, exited) = {
-                let log = match self.access_log.read() {
-                    Ok(log) => log,
-                    Err(err) => todo!(),
+                let log = self.access_log.read().expect("fail-lock");
+                // TODO: no magic
+                let epochs: Vec<u64> = {
+                    let iter = log.iter().map(|acc| acc.load(SeqCst));
+                    iter.filter_map(|epoch| {
+                        if epoch & 0x8000000000000000 == 0 {
+                            None
+                        } else {
+                            Some(epoch & 0x7FFFFFFFFFFFFFFF)
+                        }
+                    })
+                    .collect()
                 };
                 // TODO: no magic
-                let epochs: Vec<u64> = log.iter().map(|acc| acc.load(SeqCst)).collect();
                 let gc = epochs.clone().into_iter().min().unwrap() - 10;
                 let exited = epochs.into_iter().all(|acc| acc == 0);
                 (gc, exited)
@@ -145,6 +165,10 @@ impl<K, V> FnOnce<()> for GcThread<K, V> {
                 match obj {
                     Reclaim::Entry { epoch, .. } if epoch >= gc => new_objs.push(obj),
                     Reclaim::Entry { .. } => (),
+                    Reclaim::Child { epoch, .. } if epoch >= gc => new_objs.push(obj),
+                    Reclaim::Child { .. } => (),
+                    Reclaim::Node { epoch, .. } if epoch >= gc => new_objs.push(obj),
+                    Reclaim::Node { .. } => (),
                 }
             }
 
