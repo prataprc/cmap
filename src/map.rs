@@ -1,16 +1,15 @@
-use mkit::thread::{Rx, Thread};
-
 use std::{
     borrow::Borrow,
     hash::{Hash, Hasher},
     sync::{
-        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
         mpsc, Arc, RwLock,
     },
+    thread,
 };
 
 use crate::{
-    gc::{self, Cas, Epochs, Gc, GcThread, Reclaim},
+    gc::{self, gc_thread, Cas, Epochs, Reclaim},
     Result,
 };
 
@@ -26,8 +25,8 @@ pub struct Map<K, V> {
     root: Arc<AtomicPtr<In<K, V>>>,
     epoch: Arc<AtomicU64>,
     access_log: Epochs,
-    gc: Arc<Thread<Reclaim<K, V>>>,
-    tx: Gc<K, V>,
+    handle: Arc<thread::JoinHandle<()>>,
+    tx: mpsc::Sender<Reclaim<K, V>>,
 }
 
 pub struct In<K, V> {
@@ -64,15 +63,6 @@ impl<K, V> From<(K, V)> for Item<K, V> {
     }
 }
 
-impl<K, V> Child<K, V> {
-    fn as_leaf(&self) -> bool {
-        match self {
-            Child::Deep(_) => false,
-            Child::Leaf(_) => true,
-        }
-    }
-}
-
 impl<K, V> Map<K, V>
 where
     K: 'static + Send,
@@ -91,24 +81,21 @@ where
         };
 
         let access_log = Arc::new(RwLock::new(vec![Arc::new(AtomicU64::new(1))]));
+        let (tx, rx) = mpsc::channel();
+
         let log = Arc::clone(&access_log);
-        let (gc, tx) = Thread::new("cmap", |rx: Rx<Reclaim<K, V>>| {
-            let th = GcThread::new(log, rx);
-            th
-        });
+        let handle = thread::spawn(move || gc_thread(log, rx));
 
         Map {
             id: 0,
             root,
             epoch: Arc::new(AtomicU64::new(1)),
             access_log,
-            gc: Arc::new(gc),
+            handle: Arc::new(handle),
             tx,
         }
     }
-}
 
-impl<K, V> Map<K, V> {
     pub fn cloned(&self) -> Map<K, V> {
         let id = {
             let mut access_log = self.access_log.write().expect("lock-panic");
@@ -120,11 +107,13 @@ impl<K, V> Map<K, V> {
             root: Arc::clone(&self.root),
             epoch: Arc::clone(&self.epoch),
             access_log: Arc::clone(&self.access_log),
-            gc: Arc::clone(&self.gc),
+            handle: Arc::clone(&self.handle),
             tx: self.tx.clone(),
         }
     }
+}
 
+impl<K, V> Map<K, V> {
     fn generate_cas(&self) -> Cas<K, V> {
         let epoch = Arc::clone(&self.epoch);
         let at = {
@@ -168,12 +157,10 @@ impl<K, V> Node<K, V> {
             bmp[off] = 1 << w1;
 
             let node = Self::new_subtrie(item, leaf, pairs, op);
-            let child_ptr = Child::new_deep(node, &mut op.cas);
-            let childs = vec![AtomicPtr::new(child_ptr)];
+            let childs = vec![AtomicPtr::new(Child::new_deep(node, &mut op.cas))];
 
             let node_ptr = Box::leak(Box::new(Node::Trie { bmp, childs }));
 
-            op.cas.free_on_fail(gc::Mem::Child(child_ptr));
             op.cas.free_on_fail(gc::Mem::Node(node_ptr));
             node_ptr
         } else {
@@ -281,11 +268,9 @@ impl<K, V> Node<K, V> {
                     .map(|c| AtomicPtr::new(c.load(SeqCst)))
                     .collect();
 
-                let child_ptr = Box::leak(Child::new_leaf(k, v));
-                childs.insert(n, AtomicPtr::new(child_ptr));
+                childs.insert(n, AtomicPtr::new(Child::new_leaf(k, v, &mut op.cas)));
                 let new = Box::leak(Box::new(Node::Trie { bmp, childs }));
 
-                op.cas.free_on_fail(gc::Mem::Child(child_ptr));
                 op.cas.free_on_fail(gc::Mem::Node(new));
                 op.cas.free_on_pass(gc::Mem::Node(op.old));
                 if op.cas.swing(&op.inode.node, op.old, new) {
@@ -314,12 +299,10 @@ impl<K, V> Node<K, V> {
                     .map(|c| AtomicPtr::new(c.load(SeqCst)))
                     .collect();
 
-                let new_child_ptr = Box::leak(Child::new_leaf(k, v));
-                childs[n] = AtomicPtr::new(new_child_ptr);
+                childs[n] = AtomicPtr::new(Child::new_leaf(k, v, &mut op.cas));
                 let new = Box::leak(Box::new(Node::Trie { bmp, childs }));
 
                 op.cas.free_on_fail(gc::Mem::Node(new));
-                op.cas.free_on_fail(gc::Mem::Child(new_child_ptr));
                 op.cas.free_on_pass(gc::Mem::Node(op.old));
                 op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
                 if op.cas.swing(&op.inode.node, op.old, new) {
@@ -387,15 +370,10 @@ impl<K, V> Node<K, V> {
                     .map(|c| AtomicPtr::new(c.load(SeqCst)))
                     .collect();
 
-                let new_child = Box::new(Child::Deep(In {
-                    node: AtomicPtr::new(node),
-                }));
-                let new_child_ptr = Box::leak(new_child);
-                childs[n] = AtomicPtr::new(new_child_ptr);
+                childs[n] = AtomicPtr::new(Child::new_deep(node, &mut op.cas));
                 let new = Box::leak(Box::new(Node::Trie { bmp, childs }));
 
                 op.cas.free_on_fail(gc::Mem::Node(new));
-                op.cas.free_on_fail(gc::Mem::Child(new_child_ptr));
                 op.cas.free_on_pass(gc::Mem::Node(op.old));
                 op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
                 if op.cas.swing(&op.inode.node, op.old, new) {
@@ -411,12 +389,15 @@ impl<K, V> Node<K, V> {
 }
 
 impl<K, V> Child<K, V> {
-    fn new_leaf(key: &K, value: &V) -> Box<Child<K, V>>
+    fn new_leaf(key: &K, value: &V, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V>
     where
         K: Clone,
         V: Clone,
     {
-        Box::new(Child::Leaf((key.clone(), value.clone()).into()))
+        let (key, value) = (key.clone(), value.clone());
+        let child_ptr = Box::leak(Box::new(Child::Leaf((key, value).into())));
+        cas.free_on_fail(gc::Mem::Child(child_ptr));
+        child_ptr
     }
 
     fn new_deep(node: *mut Node<K, V>, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V> {
@@ -568,6 +549,29 @@ impl<K, V> Map<K, V> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    pub fn remove<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Clone + Borrow<Q>,
+        V: Clone,
+        Q: PartialEq + ?Sized + Hash,
+    {
+        {
+            let access = self.epoch.load(SeqCst) | 0x8000000000000000;
+            let access_log = self.access_log.read().expect("fail-lock");
+            access_log[self.id].store(access, SeqCst)
+        };
+
+        let ws = key_to_hashbits(&key);
+        loop {
+            let inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
+            match self.do_remove(key, ws.clone(), inode) {
+                RemRc::Some(old) => break Some(old),
+                RemRc::None => break None,
+                RemRc::Retry => (),
             }
         }
     }
