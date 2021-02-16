@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{entry::Entry, map::Child, map::Node};
+use crate::{map::Child, map::Node};
 
 // CAS operation
 
@@ -62,7 +62,7 @@ impl<'a, K, V> Cas<'a, K, V> {
 }
 
 pub enum Mem<K, V> {
-    Entry(*mut Entry<K, V>),
+    // Entry(*mut Entry<K, V>), TODO
     Child(*mut Child<K, V>),
     Node(*mut Node<K, V>),
 }
@@ -70,11 +70,12 @@ pub enum Mem<K, V> {
 impl<K, V> Mem<K, V> {
     fn pass(self, epoch: u64, gc: &Gc<K, V>) {
         match self {
-            Mem::Entry(ptr) => {
-                let entry = unsafe { Box::from_raw(ptr) };
-                let rclm = Reclaim::Entry { epoch, entry };
-                gc.post(rclm).expect("ipc-fail");
-            }
+            // TODO
+            //Mem::Entry(ptr) => {
+            //    let entry = unsafe { Box::from_raw(ptr) };
+            //    let rclm = Reclaim::Entry { epoch, entry };
+            //    gc.post(rclm).expect("ipc-fail");
+            //}
             Mem::Child(ptr) => {
                 let child = unsafe { Box::from_raw(ptr) };
                 let rclm = Reclaim::Child { epoch, child };
@@ -90,9 +91,10 @@ impl<K, V> Mem<K, V> {
 
     fn fail(self) {
         match self {
-            Mem::Entry(ptr) => {
-                let _entry = unsafe { Box::from_raw(ptr) };
-            }
+            // TODO
+            //Mem::Entry(ptr) => {
+            //    let _entry = unsafe { Box::from_raw(ptr) };
+            //}
             Mem::Child(ptr) => {
                 let _child = unsafe { Box::from_raw(ptr) };
             }
@@ -104,7 +106,7 @@ impl<K, V> Mem<K, V> {
 }
 
 pub enum Reclaim<K, V> {
-    Entry { epoch: u64, entry: Box<Entry<K, V>> },
+    // Entry { epoch: u64, entry: Box<Entry<K, V>> }, TODO
     Child { epoch: u64, child: Box<Child<K, V>> },
     Node { epoch: u64, node: Box<Node<K, V>> },
 }
@@ -163,8 +165,9 @@ impl<K, V> FnOnce<()> for GcThread<K, V> {
             let mut new_objs = vec![];
             for obj in objs.into_iter() {
                 match obj {
-                    Reclaim::Entry { epoch, .. } if epoch >= gc => new_objs.push(obj),
-                    Reclaim::Entry { .. } => (),
+                    // TODO
+                    //Reclaim::Entry { epoch, .. } if epoch >= gc => new_objs.push(obj),
+                    //Reclaim::Entry { .. } => (),
                     Reclaim::Child { epoch, .. } if epoch >= gc => new_objs.push(obj),
                     Reclaim::Child { .. } => (),
                     Reclaim::Node { epoch, .. } if epoch >= gc => new_objs.push(obj),

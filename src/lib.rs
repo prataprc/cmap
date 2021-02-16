@@ -50,7 +50,7 @@ macro_rules! err_at {
     }};
 }
 
-mod entry;
+// mod entry;
 mod gc;
 mod map;
 
