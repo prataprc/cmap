@@ -15,6 +15,9 @@ use crate::{
 
 const SLOT_MASK: u64 = 0xFF;
 
+// TODO: try_compact() may skip several tomb-nodes, if rw acess into Map is
+//       focused on a specifi sub-tree. Implement a scavanger thread to clean-up
+//       the tomb.
 // TODO: validate() method
 //       * make sure that Node::List are only at the 8th level.
 //       * make sure that there are no Node::Trie with empty childs.
@@ -129,65 +132,6 @@ impl<K, V> Map<K, V> {
 }
 
 impl<K, V> Node<K, V> {
-    fn new_list(items: Vec<Item<K, V>>, cas: &mut Cas<K, V>) -> *mut Node<K, V>
-    where
-        K: Clone,
-        V: Clone,
-    {
-        let node_ptr = Box::leak(Box::new(Node::List { items }));
-        cas.free_on_fail(gc::Mem::Node(node_ptr));
-        node_ptr
-    }
-
-    fn new_subtrie(
-        item: Item<K, V>,
-        leaf: &Item<K, V>,
-        mut pairs: Vec<(u8, u8)>,
-        op: &mut CasOp<K, V>,
-    ) -> *mut Node<K, V>
-    where
-        K: Clone,
-        V: Clone,
-    {
-        if pairs.len() == 0 {
-            return Node::new_list(vec![item, leaf.clone()], &mut op.cas);
-        }
-
-        let (w1, w2) = pairs.remove(0);
-
-        if w1 == w2 {
-            let mut bmp = [0_u128; 2];
-            let off = if w1 < 128 { 0 } else { 1 };
-            bmp[off] = 1 << w1;
-
-            let node = Self::new_subtrie(item, leaf, pairs, op);
-            let childs = vec![AtomicPtr::new(Child::new_deep(node, &mut op.cas))];
-
-            let node_ptr = Box::leak(Box::new(Node::Trie { bmp, childs }));
-
-            op.cas.free_on_fail(gc::Mem::Node(node_ptr));
-            node_ptr
-        } else {
-            let mut bmp = [0_u128; 2];
-
-            let off = if w1 < 128 { 0 } else { 1 };
-            bmp[off] = 1 << w1;
-            let child1_ptr = Box::leak(Box::new(Child::Leaf(item)));
-
-            let off = if w2 < 128 { 0 } else { 1 };
-            bmp[off] = 1 << w2;
-            let child2_ptr = Box::leak(Box::new(Child::Leaf(leaf.clone())));
-
-            let childs = vec![AtomicPtr::new(child1_ptr), AtomicPtr::new(child2_ptr)];
-            let node_ptr = Box::leak(Box::new(Node::Trie { bmp, childs }));
-
-            op.cas.free_on_fail(gc::Mem::Child(child1_ptr));
-            op.cas.free_on_fail(gc::Mem::Child(child2_ptr));
-            op.cas.free_on_fail(gc::Mem::Node(node_ptr));
-            node_ptr
-        }
-    }
-
     fn to_tomb_item(&self) -> Option<Item<K, V>>
     where
         K: Clone,
@@ -208,11 +152,87 @@ impl<K, V> Node<K, V> {
         }
     }
 
-    fn hamming_distance(&self, w: u8) -> Option<Distance> {
+    fn hamming_set(&mut self, w: u8) {
         match self {
-            Node::Trie { bmp, .. } => Some(hamming_distance(w, bmp.clone())),
-            Node::Tomb { .. } => None,
-            Node::List { .. } => None,
+            Node::Trie { bmp, .. } => {
+                let off = if w < 128 { 0 } else { 1 };
+                bmp[off] = bmp[off] | 1 << (w % 128);
+            }
+            Node::Tomb { .. } | Node::List { .. } => (),
+        }
+    }
+
+    fn hamming_reset(&mut self, w: u8) {
+        match self {
+            Node::Trie { bmp, .. } => {
+                let off = if w < 128 { 0 } else { 1 };
+                bmp[off] = bmp[off] & (!(1 << (w % 128)));
+            }
+            Node::Tomb { .. } | Node::List { .. } => (),
+        }
+    }
+}
+
+impl<K, V> Node<K, V> {
+    fn new_list(items: Vec<Item<K, V>>, cas: &mut Cas<K, V>) -> *mut Node<K, V>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let node_ptr = Box::leak(Box::new(Node::List { items }));
+        cas.free_on_fail(gc::Mem::Node(node_ptr));
+        node_ptr
+    }
+
+    fn new_subtrie(
+        key: &K,
+        value: &V,
+        leaf: &Item<K, V>,
+        mut pairs: Vec<(u8, u8)>,
+        op: &mut CasOp<K, V>,
+    ) -> *mut Node<K, V>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        if pairs.len() == 0 {
+            let item: Item<K, V> = (key.clone(), value.clone()).into();
+            return Node::new_list(vec![item, leaf.clone()], &mut op.cas);
+        }
+
+        let (w1, w2) = pairs.remove(0);
+
+        if w1 == w2 {
+            let mut node = {
+                // one-child node trie, pointing to another intermediate node.
+                let childs = {
+                    let node = Self::new_subtrie(key, value, leaf, pairs, op);
+                    vec![AtomicPtr::new(Child::new_deep(node, &mut op.cas))]
+                };
+                let bmp = [0_u128; 2];
+                Box::new(Node::Trie { bmp, childs })
+            };
+            node.hamming_set(w1);
+            let node_ptr = Box::leak(node);
+
+            op.cas.free_on_fail(gc::Mem::Node(node_ptr));
+            node_ptr
+        } else {
+            let mut node = {
+                // two-child node trie.
+                let child1_ptr = Child::new_leaf_from(key, value, &mut op.cas);
+                let child2_ptr = Child::new_leaf(leaf.clone(), &mut op.cas);
+                let childs = vec![AtomicPtr::new(child1_ptr), AtomicPtr::new(child2_ptr)];
+
+                let bmp = [0_u128; 2];
+                Box::new(Node::Trie { bmp, childs })
+            };
+            node.hamming_set(w1);
+            node.hamming_set(w2);
+            let node_ptr = Box::leak(node);
+
+            op.cas.free_on_fail(gc::Mem::Node(node_ptr));
+            node_ptr
         }
     }
 
@@ -224,17 +244,7 @@ impl<K, V> Node<K, V> {
         match unsafe { op.old.as_ref().unwrap() } {
             Node::List { items } => {
                 let mut items = items.clone();
-                let old_value = match items.iter_mut().find(|item| &item.key == key) {
-                    Some(item) => {
-                        let old_value = item.value.clone();
-                        item.value = value.clone();
-                        Some(old_value)
-                    }
-                    None => {
-                        items.insert(0, (key.clone(), value.clone()).into());
-                        None
-                    }
-                };
+                let old_value = update_into_list(key, value, &mut items);
 
                 let new = Box::leak(Box::new(Node::List { items }));
 
@@ -246,34 +256,32 @@ impl<K, V> Node<K, V> {
                     CasRc::Retry
                 }
             }
+            Node::Tomb { .. } => CasRc::Retry,
             Node::Trie { .. } => unreachable!(),
-            Node::Tomb { .. } => unreachable!(),
         }
     }
 
-    fn ins_child(k: &K, v: &V, w: u8, n: usize, mut op: CasOp<K, V>) -> CasRc<()>
+    fn ins_child(key: &K, value: &V, w: u8, n: usize, mut op: CasOp<K, V>) -> CasRc<()>
     where
         K: Clone,
         V: Clone,
     {
         match unsafe { op.old.as_ref().unwrap() } {
             Node::Trie { bmp, childs } => {
-                let bmp = {
-                    let mut bmp = bmp.clone();
-                    if w < 128 {
-                        bmp[0] = bmp[0] | (1_u128 << w);
-                    } else {
-                        bmp[1] = bmp[1] | (1_u128 << w);
-                    };
-                    bmp
+                let mut node = {
+                    let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
+                        .iter()
+                        .map(|c| AtomicPtr::new(c.load(SeqCst)))
+                        .collect();
+                    let new_child_ptr = Child::new_leaf_from(key, value, &mut op.cas);
+                    childs.insert(n, AtomicPtr::new(new_child_ptr));
+
+                    let bmp = bmp.clone();
+                    Box::new(Node::Trie { bmp, childs })
                 };
-                let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
-                    .iter()
-                    .map(|c| AtomicPtr::new(c.load(SeqCst)))
-                    .collect();
+                node.hamming_set(w);
 
-                childs.insert(n, AtomicPtr::new(Child::new_leaf(k, v, &mut op.cas)));
-                let new = Box::leak(Box::new(Node::Trie { bmp, childs }));
+                let new = Box::leak(node);
 
                 op.cas.free_on_fail(gc::Mem::Node(new));
                 op.cas.free_on_pass(gc::Mem::Node(op.old));
@@ -288,7 +296,7 @@ impl<K, V> Node<K, V> {
         }
     }
 
-    fn set_leaf_child(k: &K, v: &V, n: usize, mut op: CasOp<K, V>) -> CasRc<()>
+    fn set_child(key: &K, value: &V, n: usize, mut op: CasOp<K, V>) -> CasRc<()>
     where
         K: Clone,
         V: Clone,
@@ -296,19 +304,22 @@ impl<K, V> Node<K, V> {
         match unsafe { op.old.as_ref().unwrap() } {
             Node::Trie { bmp, childs } => {
                 let old_child_ptr = childs[n].load(SeqCst);
+                let node = {
+                    let bmp = bmp.clone();
+                    let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
+                        .iter()
+                        .map(|c| AtomicPtr::new(c.load(SeqCst)))
+                        .collect();
+                    let new_child_ptr = Child::new_leaf_from(key, value, &mut op.cas);
+                    childs[n] = AtomicPtr::new(new_child_ptr);
+                    Box::new(Node::Trie { bmp, childs })
+                };
 
-                let bmp = bmp.clone();
-                let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
-                    .iter()
-                    .map(|c| AtomicPtr::new(c.load(SeqCst)))
-                    .collect();
+                let new = Box::leak(node);
 
-                childs[n] = AtomicPtr::new(Child::new_leaf(k, v, &mut op.cas));
-                let new = Box::leak(Box::new(Node::Trie { bmp, childs }));
-
-                op.cas.free_on_fail(gc::Mem::Node(new));
-                op.cas.free_on_pass(gc::Mem::Node(op.old));
                 op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                op.cas.free_on_fail(gc::Mem::Node(new));
+                op.cas.free_on_pass(gc::Mem::Node(op.old));
                 if op.cas.swing(&op.inode.node, op.old, new) {
                     CasRc::Ok(())
                 } else {
@@ -320,34 +331,37 @@ impl<K, V> Node<K, V> {
         }
     }
 
-    fn set_list(k: &K, v: &V, n: usize, mut op: CasOp<K, V>) -> CasRc<()>
+    fn leaf_to_list(k: &K, v: &V, n: usize, mut op: CasOp<K, V>) -> CasRc<()>
     where
         K: Clone,
         V: Clone,
     {
+        // convert a child node holding a leaf, into a interm-node pointing to node-list
         match unsafe { op.old.as_ref().unwrap() } {
             Node::Trie { bmp, childs } => {
                 let old_child_ptr = childs[n].load(SeqCst);
+                let node = {
+                    let bmp = bmp.clone();
+                    let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
+                        .iter()
+                        .map(|c| AtomicPtr::new(c.load(SeqCst)))
+                        .collect();
 
-                let bmp = bmp.clone();
-                let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
-                    .iter()
-                    .map(|c| AtomicPtr::new(c.load(SeqCst)))
-                    .collect();
-
-                let new = match unsafe { old_child_ptr.as_ref().unwrap() } {
-                    Child::Leaf(leaf) => {
+                    let leaf = unsafe { old_child_ptr.as_ref().unwrap() }.to_leaf_item();
+                    let new_child_ptr = {
                         let items = vec![(k.clone(), v.clone()).into(), leaf.clone()];
-                        let node = Node::new_list(items, &mut op.cas);
-                        childs[n] = AtomicPtr::new(Child::new_deep(node, &mut op.cas));
-                        Box::leak(Box::new(Node::Trie { bmp, childs }))
-                    }
-                    Child::Deep(_) => unreachable!(),
+                        Child::new_deep(Node::new_list(items, &mut op.cas), &mut op.cas)
+                    };
+
+                    childs[n] = AtomicPtr::new(new_child_ptr);
+                    Box::new(Node::Trie { bmp, childs })
                 };
 
-                op.cas.free_on_pass(gc::Mem::Node(op.old));
-                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                let new = Box::leak(node);
 
+                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                op.cas.free_on_fail(gc::Mem::Node(new));
+                op.cas.free_on_pass(gc::Mem::Node(op.old));
                 if op.cas.swing(&op.inode.node, op.old, new) {
                     CasRc::Ok(())
                 } else {
@@ -367,19 +381,22 @@ impl<K, V> Node<K, V> {
         match unsafe { op.old.as_ref().unwrap() } {
             Node::Trie { bmp, childs } => {
                 let old_child_ptr = childs[n].load(SeqCst);
+                let node = {
+                    let bmp = bmp.clone();
+                    let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
+                        .iter()
+                        .map(|c| AtomicPtr::new(c.load(SeqCst)))
+                        .collect();
 
-                let bmp = bmp.clone();
-                let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
-                    .iter()
-                    .map(|c| AtomicPtr::new(c.load(SeqCst)))
-                    .collect();
+                    childs[n] = AtomicPtr::new(Child::new_deep(node, &mut op.cas));
+                    Box::new(Node::Trie { bmp, childs })
+                };
 
-                childs[n] = AtomicPtr::new(Child::new_deep(node, &mut op.cas));
-                let new = Box::leak(Box::new(Node::Trie { bmp, childs }));
+                let new = Box::leak(node);
 
+                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
                 op.cas.free_on_fail(gc::Mem::Node(new));
                 op.cas.free_on_pass(gc::Mem::Node(op.old));
-                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
                 if op.cas.swing(&op.inode.node, op.old, new) {
                     CasRc::Ok(())
                 } else {
@@ -390,16 +407,144 @@ impl<K, V> Node<K, V> {
             Node::Tomb { .. } => unreachable!(),
         }
     }
+
+    fn remove_from_list<Q>(key: &Q, mut op: CasOp<K, V>) -> CasRc<Option<V>>
+    where
+        K: Clone + Borrow<Q>,
+        V: Clone,
+        Q: PartialEq + ?Sized,
+    {
+        let (node, ov) = match unsafe { op.old.as_ref().unwrap() } {
+            Node::List { items } => match remove_from_list(key, items) {
+                Some((mut items, ov)) if items.len() == 1 => {
+                    let item = items.remove(0); // remove the only item in the list
+                    (Box::new(Node::Tomb { item }), ov)
+                }
+                Some((items, ov)) => (Box::new(Node::List { items }), ov),
+                None => return CasRc::Ok(None),
+            },
+            Node::Tomb { .. } => return CasRc::Retry,
+            Node::Trie { .. } => unreachable!(),
+        };
+
+        let new = Box::leak(node);
+
+        op.cas.free_on_pass(gc::Mem::Node(op.old));
+        op.cas.free_on_fail(gc::Mem::Node(new));
+        if op.cas.swing(&op.inode.node, op.old, new) {
+            CasRc::Ok(Some(ov))
+        } else {
+            CasRc::Retry
+        }
+    }
+
+    fn remove_child(w: u8, n: usize, mut op: CasOp<K, V>) -> CasRc<Option<V>>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        match unsafe { op.old.as_ref().unwrap() } {
+            Node::Trie { bmp, childs } => {
+                let old_child_ptr = childs[n].load(SeqCst);
+                let node = {
+                    let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
+                        .iter()
+                        .map(|c| AtomicPtr::new(c.load(SeqCst)))
+                        .collect();
+                    childs.remove(n);
+
+                    let bmp = bmp.clone();
+                    if childs.len() == 1 {
+                        let item = {
+                            let c = childs.remove(0).load(SeqCst);
+                            unsafe { c.as_ref().unwrap() }.to_leaf_item()
+                        };
+                        Box::new(Node::Tomb { item })
+                    } else {
+                        let mut node = Box::new(Node::Trie { bmp, childs });
+                        node.hamming_reset(w);
+                        node
+                    }
+                };
+
+                let new = Box::leak(node);
+
+                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                op.cas.free_on_fail(gc::Mem::Node(new));
+                op.cas.free_on_pass(gc::Mem::Node(op.old));
+                if op.cas.swing(&op.inode.node, op.old, new) {
+                    CasRc::Ok(None)
+                } else {
+                    CasRc::Retry
+                }
+            }
+            Node::Tomb { .. } => unreachable!(),
+            Node::List { .. } => unreachable!(),
+        }
+    }
+
+    fn try_compact(n: usize, item: Option<Item<K, V>>, mut op: CasOp<K, V>)
+    where
+        K: Clone,
+        V: Clone,
+    {
+        match unsafe { op.old.as_ref().unwrap() } {
+            Node::Trie { bmp, childs } => match item {
+                Some(item) => {
+                    let old_child_ptr = childs[n].load(SeqCst);
+                    let node = {
+                        let bmp = bmp.clone();
+                        let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
+                            .iter()
+                            .map(|c| AtomicPtr::new(c.load(SeqCst)))
+                            .collect();
+                        let new_child_ptr = Child::new_leaf(item, &mut op.cas);
+                        childs[n] = AtomicPtr::new(new_child_ptr);
+
+                        if childs.len() == 1 {
+                            let item = {
+                                let c = childs.remove(0).load(SeqCst);
+                                unsafe { c.as_ref().unwrap() }.to_leaf_item()
+                            };
+                            Box::new(Node::Tomb { item })
+                        } else {
+                            Box::new(Node::Trie { bmp, childs })
+                        }
+                    };
+
+                    let new = Box::leak(node);
+
+                    op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                    op.cas.free_on_fail(gc::Mem::Node(new));
+                    op.cas.free_on_pass(gc::Mem::Node(op.old));
+                    op.cas.swing(&op.inode.node, op.old, new);
+                }
+                None => (),
+            },
+            Node::Tomb { .. } => unreachable!(),
+            Node::List { .. } => unreachable!(),
+        }
+    }
 }
 
 impl<K, V> Child<K, V> {
-    fn new_leaf(key: &K, value: &V, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V>
+    fn new_leaf_from(key: &K, value: &V, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V>
     where
         K: Clone,
         V: Clone,
     {
         let (key, value) = (key.clone(), value.clone());
         let child_ptr = Box::leak(Box::new(Child::Leaf((key, value).into())));
+        cas.free_on_fail(gc::Mem::Child(child_ptr));
+        child_ptr
+    }
+
+    fn new_leaf(leaf: Item<K, V>, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let child_ptr = Box::leak(Box::new(Child::Leaf(leaf)));
         cas.free_on_fail(gc::Mem::Child(child_ptr));
         child_ptr
     }
@@ -412,12 +557,23 @@ impl<K, V> Child<K, V> {
         cas.free_on_fail(gc::Mem::Child(child_ptr));
         child_ptr
     }
+
+    fn to_leaf_item(&self) -> Item<K, V>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        match self {
+            Child::Leaf(leaf) => leaf.clone(),
+            Child::Deep(_) => unreachable!(),
+        }
+    }
 }
 
 impl<K, V> Map<K, V> {
     pub fn get<Q>(&self, key: &Q) -> Option<V>
     where
-        K: Borrow<Q>,
+        K: Clone + Borrow<Q>,
         V: Clone,
         Q: PartialEq + ?Sized + Hash,
     {
@@ -428,36 +584,56 @@ impl<K, V> Map<K, V> {
         let mut inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
 
         let value = loop {
-            let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
-            inode = match (node, ws.pop()) {
+            let old = inode.node.load(SeqCst);
+            let node = unsafe { old.as_ref().unwrap() };
+
+            let (n, child) = match (node, ws.pop()) {
                 (Node::Trie { bmp, childs }, Some(w)) => {
-                    let child = match hamming_distance(w, bmp.clone()) {
+                    let hd = hamming_distance(w, bmp.clone());
+                    match hd {
                         Distance::Set(n) => {
                             let child_ptr = childs[n].load(SeqCst);
-                            unsafe { child_ptr.as_ref().unwrap() }
+                            (n, unsafe { child_ptr.as_ref().unwrap() })
                         }
                         Distance::Insert(_) => break None,
-                    };
-                    match child {
-                        Child::Deep(inode) => inode,
-                        Child::Leaf(item) if item.key.borrow() == key => {
-                            break Some(item.value.clone());
-                        }
-                        Child::Leaf(_) => break None,
                     }
                 }
                 (Node::Trie { .. }, None) => unreachable!(),
-                (Node::List { items }, _) => {
-                    break items
-                        .iter()
-                        .find(|x| x.key.borrow() == key)
-                        .map(|item| item.value.clone())
-                }
+                (Node::List { items }, _) => break get_from_list(key, items),
                 (Node::Tomb { item }, _) if item.key.borrow() == key => {
                     break Some(item.value.clone())
                 }
                 (Node::Tomb { .. }, _) => break None,
-            }
+            };
+
+            inode = match child {
+                Child::Deep(next_inode) => {
+                    let cas = self.generate_cas();
+                    let mut op = CasOp { inode, old, cas };
+
+                    let next_node = {
+                        let next_node_ptr = next_inode.node.load(SeqCst);
+                        op.cas.free_on_pass(gc::Mem::Node(next_node_ptr));
+                        unsafe { next_node_ptr.as_ref().unwrap() }
+                    };
+                    match next_node.to_tomb_item() {
+                        Some(item) if item.key.borrow() == key => {
+                            let value = item.value.clone();
+                            Node::try_compact(n, Some(item), op);
+                            break Some(value);
+                        }
+                        Some(item) => {
+                            Node::try_compact(n, Some(item), op);
+                            break None;
+                        }
+                        None => next_inode,
+                    }
+                }
+                Child::Leaf(item) if item.key.borrow() == key => {
+                    break Some(item.value.clone());
+                }
+                Child::Leaf(_) => break None,
+            };
         };
 
         value
@@ -483,6 +659,7 @@ impl<K, V> Map<K, V> {
                 let w = match ws.pop() {
                     Some(w) => w,
                     None => {
+                        // must be Node::List
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
 
@@ -493,18 +670,21 @@ impl<K, V> Map<K, V> {
                     }
                 };
 
-                let n = match node.hamming_distance(w) {
-                    Some(Distance::Insert(n)) => {
-                        let cas = self.generate_cas();
-                        let op = CasOp { inode, old, cas };
+                let n = match node {
+                    Node::Trie { bmp, .. } => match hamming_distance(w, bmp.clone()) {
+                        Distance::Insert(n) => {
+                            let cas = self.generate_cas();
+                            let op = CasOp { inode, old, cas };
 
-                        match Node::ins_child(&key, &value, w, n, op) {
-                            CasRc::Ok(_) => break 'retry Ok(None),
-                            CasRc::Retry => continue 'retry,
+                            match Node::ins_child(&key, &value, w, n, op) {
+                                CasRc::Ok(_) => break 'retry Ok(None),
+                                CasRc::Retry => continue 'retry,
+                            }
                         }
-                    }
-                    Some(Distance::Set(n)) => n,
-                    None => unreachable!(),
+                        Distance::Set(n) => n,
+                    },
+                    Node::Tomb { .. } => continue 'retry,
+                    Node::List { .. } => unreachable!(),
                 };
 
                 let old_child_ptr = node.get_child(n);
@@ -514,7 +694,7 @@ impl<K, V> Map<K, V> {
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
 
-                        match Node::set_leaf_child(&key, &value, n, op) {
+                        match Node::set_child(&key, &value, n, op) {
                             CasRc::Ok(_) => break 'retry Ok(None),
                             CasRc::Retry => continue 'retry,
                         }
@@ -523,7 +703,7 @@ impl<K, V> Map<K, V> {
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
 
-                        match Node::set_list(&key, &value, n, op) {
+                        match Node::leaf_to_list(&key, &value, n, op) {
                             CasRc::Ok(_) => break 'retry Ok(None),
                             CasRc::Retry => continue 'retry,
                         }
@@ -538,8 +718,7 @@ impl<K, V> Map<K, V> {
                             ws.clone().into_iter().zip(ls.into_iter()).collect()
                         };
 
-                        let item: Item<K, V> = (key.clone(), value.clone()).into();
-                        let node_ptr = Node::new_subtrie(item, leaf, xs, &mut op);
+                        let node_ptr = Node::new_subtrie(&key, &value, leaf, xs, &mut op);
 
                         match Node::set_trie_child(node_ptr, n, op) {
                             CasRc::Ok(_) => break 'retry Ok(None),
@@ -564,146 +743,71 @@ impl<K, V> Map<K, V> {
         loop {
             let inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             match self.do_remove(key, ws.clone(), inode) {
-                RemRc::Some(old) => break Some(old),
-                RemRc::None => break None,
-                RemRc::Retry => (),
+                CasRc::Ok(Some(old)) => break Some(old),
+                CasRc::Ok(None) => break None,
+                CasRc::Retry => (),
             }
         }
     }
 
-    fn do_remove<Q>(&self, key: &Q, ws: Vec<u8>, inode: &In<K, V>) -> RemRc<V>
+    fn do_remove<Q>(&self, key: &Q, mut ws: Vec<u8>, inode: &In<K, V>) -> CasRc<Option<V>>
     where
         K: Clone + Borrow<Q>,
         V: Clone,
         Q: PartialEq + ?Sized,
     {
-        'retry: loop {
-            let old: *mut Node<K, V> = inode.node.load(SeqCst);
-            let node: &Node<K, V> = unsafe { old.as_ref().unwrap() };
-            let mut slots = ws.clone();
+        let old: *mut Node<K, V> = inode.node.load(SeqCst);
+        let node: &Node<K, V> = unsafe { old.as_ref().unwrap() };
 
-            let w = match slots.pop() {
-                Some(w) => w,
-                None => {
-                    let (new, ov) = match node {
-                        Node::List { items } => {
-                            let res = remove_from_list(key, items.as_slice());
-                            match res {
-                                Some((mut items, ov)) if items.len() == 1 => {
-                                    let new = Node::Tomb {
-                                        item: items.remove(0),
-                                    };
-                                    (new, ov)
-                                }
-                                Some((items, ov)) => (Node::List { items }, ov),
-                                None => break 'retry RemRc::None,
-                            }
-                        }
-                        Node::Tomb { .. } => break 'retry RemRc::Retry,
-                        Node::Trie { .. } => unreachable!(),
-                    };
-
-                    let mut cas = self.generate_cas();
-
-                    let new = Box::leak(Box::new(new));
-                    cas.free_on_pass(gc::Mem::Node(old));
-                    cas.free_on_fail(gc::Mem::Node(new));
-                    if cas.swing(&inode.node, old, new) {
-                        break 'retry RemRc::Some(ov);
-                    } else {
-                        continue 'retry;
-                    }
-                }
-            };
-
-            let (n, bmp, childs) = match node {
-                Node::Trie { bmp, childs } => match hamming_distance(w, bmp.clone()) {
-                    Distance::Insert(_) => return RemRc::None,
-                    Distance::Set(n) => (n, bmp, childs),
-                },
-                Node::Tomb { .. } => break 'retry RemRc::Retry,
-                Node::List { .. } => unreachable!(),
-            };
-
-            let old_child_ptr = childs[n].load(SeqCst);
-            match unsafe { old_child_ptr.as_ref().unwrap() } {
-                Child::Deep(inode) => match self.do_remove(key, slots, inode) {
-                    RemRc::Retry => break 'retry RemRc::Retry,
-                    RemRc::None => break 'retry RemRc::None,
-                    RemRc::Some(old_value) => {
-                        let mut cas = self.generate_cas();
-
-                        let old: *mut Node<K, V> = inode.node.load(SeqCst);
-                        let new = match node.to_tomb_item() {
-                            Some(item) if childs.len() == 1 => Node::Tomb { item },
-                            Some(item) => {
-                                let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
-                                    .iter()
-                                    .map(|c| AtomicPtr::new(c.load(SeqCst)))
-                                    .collect();
-                                let new_child_ptr = Box::leak(Box::new(Child::Leaf(item)));
-                                childs[n] = AtomicPtr::new(new_child_ptr);
-
-                                cas.free_on_pass(gc::Mem::Child(old_child_ptr));
-                                cas.free_on_fail(gc::Mem::Child(new_child_ptr));
-                                Node::Trie {
-                                    bmp: bmp.clone(),
-                                    childs,
-                                }
-                            }
-                            None => break 'retry RemRc::Some(old_value),
-                        };
-                        let new = Box::leak(Box::new(new));
-
-                        cas.free_on_pass(gc::Mem::Node(old));
-                        cas.free_on_fail(gc::Mem::Node(new));
-                        if cas.swing(&inode.node, old, new) {
-                            break 'retry RemRc::Some(old_value);
-                        } else {
-                            continue 'retry;
-                        }
-                    }
-                },
-                Child::Leaf(item) if item.key.borrow() == key => {
-                    let mut cas = self.generate_cas();
-
-                    let mut childs: Vec<AtomicPtr<Child<K, V>>> = childs
-                        .iter()
-                        .map(|c| AtomicPtr::new(c.load(SeqCst)))
-                        .collect();
-                    childs.remove(n);
-
-                    assert!(childs.len() > 0);
-                    let new = match unsafe { childs[0].load(SeqCst).as_ref().unwrap() } {
-                        Child::Leaf(item) if childs.len() == 1 => {
-                            cas.free_on_pass(gc::Mem::Child(childs[0].load(SeqCst)));
-                            Node::Tomb { item: item.clone() }
-                        }
-                        Child::Deep(_) | Child::Leaf(_) => Node::Trie {
-                            bmp: bmp.clone(),
-                            childs,
-                        },
-                    };
-                    let new = Box::leak(Box::new(new));
-
-                    cas.free_on_pass(gc::Mem::Node(old));
-                    cas.free_on_fail(gc::Mem::Node(new));
-                    if cas.swing(&inode.node, old, new) {
-                        break 'retry RemRc::Some(item.value.clone());
-                    } else {
-                        continue 'retry;
-                    }
-                }
-                Child::Leaf(_) => break 'retry RemRc::None,
+        let w = match ws.pop() {
+            Some(w) => w,
+            None => {
+                let cas = self.generate_cas();
+                let op = CasOp { inode, old, cas };
+                return Node::remove_from_list(key, op);
             }
+        };
+
+        let (n, childs) = match node {
+            Node::Trie { bmp, childs } => match hamming_distance(w, bmp.clone()) {
+                Distance::Insert(_) => return CasRc::Ok(None),
+                Distance::Set(n) => (n, childs),
+            },
+            Node::Tomb { .. } => return CasRc::Retry,
+            Node::List { .. } => unreachable!(),
+        };
+
+        let old_child_ptr = childs[n].load(SeqCst);
+        match unsafe { old_child_ptr.as_ref().unwrap() } {
+            Child::Deep(next_inode) => match self.do_remove(key, ws, next_inode) {
+                CasRc::Retry => CasRc::Retry,
+                CasRc::Ok(None) => CasRc::Ok(None),
+                CasRc::Ok(Some(old_value)) => {
+                    let cas = self.generate_cas();
+                    let mut op = CasOp { inode, old, cas };
+
+                    let next_node = {
+                        let next_node_ptr = next_inode.node.load(SeqCst);
+                        op.cas.free_on_pass(gc::Mem::Node(next_node_ptr));
+                        unsafe { next_node_ptr.as_ref().unwrap() }
+                    };
+                    Node::try_compact(n, next_node.to_tomb_item(), op);
+                    CasRc::Ok(Some(old_value))
+                }
+            },
+            Child::Leaf(item) if item.key.borrow() == key => {
+                let cas = self.generate_cas();
+                let op = CasOp { inode, old, cas };
+
+                let old_value = item.value.clone();
+                match Node::remove_child(w, n, op) {
+                    CasRc::Retry => CasRc::Retry,
+                    CasRc::Ok(_) => CasRc::Ok(Some(old_value)),
+                }
+            }
+            Child::Leaf(_) => CasRc::Ok(None),
         }
     }
-}
-
-enum RemRc<V> {
-    Some(V),
-    None,
-    Retry,
 }
 
 enum CasRc<T> {
@@ -754,6 +858,18 @@ where
         .collect()
 }
 
+fn get_from_list<K, V, Q>(key: &Q, items: &[Item<K, V>]) -> Option<V>
+where
+    K: Borrow<Q>,
+    V: Clone,
+    Q: PartialEq + ?Sized,
+{
+    match items.iter().find(|x| x.key.borrow() == key) {
+        Some(x) => Some(x.value.clone()),
+        None => None,
+    }
+}
+
 fn remove_from_list<K, V, Q>(key: &Q, items: &[Item<K, V>]) -> Option<(Vec<Item<K, V>>, V)>
 where
     K: Clone + Borrow<Q>,
@@ -772,5 +888,23 @@ where
             Some((xs, x.value.clone()))
         }
         None => None,
+    }
+}
+
+fn update_into_list<K, V>(key: &K, value: &V, items: &mut Vec<Item<K, V>>) -> Option<V>
+where
+    K: Clone + PartialEq,
+    V: Clone,
+{
+    match items.iter().enumerate().find(|(_, x)| &x.key == key) {
+        Some((i, x)) => {
+            let old_value = x.value.clone();
+            items[i] = (key.clone(), value.clone()).into();
+            Some(old_value)
+        }
+        None => {
+            items.push((key.clone(), value.clone()).into());
+            None
+        }
     }
 }
