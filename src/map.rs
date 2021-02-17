@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    gc::{self, gc_thread, Cas, Epochs, Reclaim},
+    gc::{self, gc_thread, Cas, Epoch, Epochs, Reclaim},
     Result,
 };
 
@@ -115,12 +115,16 @@ where
 
 impl<K, V> Map<K, V> {
     fn generate_cas(&self) -> Cas<K, V> {
+        Cas::new(&self.tx, Arc::clone(&self.epoch))
+    }
+
+    fn generate_epoch(&self) -> Epoch {
         let epoch = Arc::clone(&self.epoch);
         let at = {
             let access_log = self.access_log.read().expect("lock-panic");
             Arc::clone(&access_log[self.id])
         };
-        Cas::new(epoch, at, &self.tx)
+        Epoch::new(epoch, at)
     }
 }
 
@@ -417,11 +421,8 @@ impl<K, V> Map<K, V> {
         V: Clone,
         Q: PartialEq + ?Sized + Hash,
     {
-        {
-            let access = self.epoch.load(SeqCst) | 0x8000000000000000;
-            let access_log = self.access_log.read().expect("fail-lock");
-            access_log[self.id].store(access, SeqCst)
-        };
+        let _access_log = self.access_log.read().expect("fail-lock");
+        let _epoch = self.generate_epoch();
 
         let mut ws = key_to_hashbits(key);
         let mut inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
@@ -459,11 +460,6 @@ impl<K, V> Map<K, V> {
             }
         };
 
-        {
-            let access_log = self.access_log.read().expect("fail-lock");
-            access_log[self.id].store(self.epoch.load(SeqCst), SeqCst)
-        };
-
         value
     }
 
@@ -472,11 +468,8 @@ impl<K, V> Map<K, V> {
         K: PartialEq + Clone + Hash,
         V: Clone,
     {
-        {
-            let access = self.epoch.load(SeqCst) | 0x8000000000000000;
-            let access_log = self.access_log.read().expect("fail-lock");
-            access_log[self.id].store(access, SeqCst)
-        };
+        let _access_log = self.access_log.read().expect("fail-lock");
+        let _epoch = self.generate_epoch();
 
         let mut ws = key_to_hashbits(&key);
 
@@ -492,6 +485,7 @@ impl<K, V> Map<K, V> {
                     None => {
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
+
                         match Node::update_list(&key, &value, op) {
                             CasRc::Ok(old_value) => break 'retry Ok(old_value),
                             CasRc::Retry => continue 'retry,
@@ -503,6 +497,7 @@ impl<K, V> Map<K, V> {
                     Some(Distance::Insert(n)) => {
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
+
                         match Node::ins_child(&key, &value, w, n, op) {
                             CasRc::Ok(_) => break 'retry Ok(None),
                             CasRc::Retry => continue 'retry,
@@ -518,6 +513,7 @@ impl<K, V> Map<K, V> {
                     Child::Leaf(item) if item.key.borrow() == &key => {
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
+
                         match Node::set_leaf_child(&key, &value, n, op) {
                             CasRc::Ok(_) => break 'retry Ok(None),
                             CasRc::Retry => continue 'retry,
@@ -526,6 +522,7 @@ impl<K, V> Map<K, V> {
                     Child::Leaf(_) if ws.len() == 0 => {
                         let cas = self.generate_cas();
                         let op = CasOp { inode, old, cas };
+
                         match Node::set_list(&key, &value, n, op) {
                             CasRc::Ok(_) => break 'retry Ok(None),
                             CasRc::Retry => continue 'retry,
@@ -534,6 +531,7 @@ impl<K, V> Map<K, V> {
                     Child::Leaf(leaf) => {
                         let cas = self.generate_cas();
                         let mut op = CasOp { inode, old, cas };
+
                         let xs: Vec<(u8, u8)> = {
                             let leaf_key = leaf.key.borrow();
                             let ls = key_to_hashbits(leaf_key)[..ws.len()].to_vec();
@@ -559,11 +557,8 @@ impl<K, V> Map<K, V> {
         V: Clone,
         Q: PartialEq + ?Sized + Hash,
     {
-        {
-            let access = self.epoch.load(SeqCst) | 0x8000000000000000;
-            let access_log = self.access_log.read().expect("fail-lock");
-            access_log[self.id].store(access, SeqCst)
-        };
+        let _access_log = self.access_log.read().expect("fail-lock");
+        let _epoch = self.generate_epoch();
 
         let ws = key_to_hashbits(&key);
         loop {

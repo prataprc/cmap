@@ -13,29 +13,35 @@ use crate::{map::Child, map::Node};
 
 pub type Epochs = Arc<RwLock<Vec<Arc<AtomicU64>>>>;
 
-pub struct Cas<'a, K, V> {
+pub struct Epoch {
     epoch: Arc<AtomicU64>,
     at: Arc<AtomicU64>,
-    tx: &'a mpsc::Sender<Reclaim<K, V>>,
-    pass: Vec<Mem<K, V>>,
-    fail: Vec<Mem<K, V>>,
 }
 
-impl<'a, K, V> Drop for Cas<'a, K, V> {
+impl Epoch {
+    pub fn new(epoch: Arc<AtomicU64>, at: Arc<AtomicU64>) -> Epoch {
+        at.store(epoch.load(SeqCst) | 0x8000000000000000, SeqCst);
+        Epoch { epoch, at }
+    }
+}
+
+impl Drop for Epoch {
     fn drop(&mut self) {
         self.at.store(self.epoch.load(SeqCst), SeqCst);
     }
 }
 
+pub struct Cas<'a, K, V> {
+    epoch: Arc<AtomicU64>,
+    tx: &'a mpsc::Sender<Reclaim<K, V>>,
+    pass: Vec<Mem<K, V>>,
+    fail: Vec<Mem<K, V>>,
+}
+
 impl<'a, K, V> Cas<'a, K, V> {
-    pub fn new(
-        epoch: Arc<AtomicU64>,
-        at: Arc<AtomicU64>,
-        tx: &'a mpsc::Sender<Reclaim<K, V>>,
-    ) -> Self {
+    pub fn new(tx: &'a mpsc::Sender<Reclaim<K, V>>, epoch: Arc<AtomicU64>) -> Self {
         Cas {
             epoch,
-            at,
             tx,
             pass: Vec::default(),
             fail: Vec::default(),
