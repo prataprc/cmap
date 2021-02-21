@@ -54,7 +54,7 @@ pub enum Child<K, V> {
     Leaf(Item<K, V>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Item<K, V> {
     key: K,
     value: V,
@@ -821,14 +821,15 @@ struct CasOp<'a, K, V> {
     cas: Cas<'a, K, V>,
 }
 
+#[derive(PartialEq, Debug)]
 enum Distance {
     Set(usize),    // found
     Insert(usize), // not found
 }
 
 fn hamming_distance(w: u8, bmp: [u128; 2]) -> Distance {
-    let posn = 1 << w;
-    let mask = !(posn - 1);
+    let posn = 1_u128 << (w % 128);
+    let mask: u128 = !(posn - 1);
     let bmp: u128 = if w < 128 { bmp[0] } else { bmp[1] };
 
     let (x, y) = ((bmp & mask), bmp);
@@ -908,3 +909,7 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "map_test.rs"]
+mod map_test;
