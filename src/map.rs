@@ -280,7 +280,7 @@ impl<K, V> Node<K, V> {
         }
 
         let (w1, w2) = pairs.pop().unwrap();
-        println!("new subtrie:{:x},{:x}", w1, w2);
+        // println!("new subtrie:{:x},{:x}", w1, w2);
 
         if w1 == w2 {
             let mut node = {
@@ -738,12 +738,12 @@ impl<K, V> Map<K, V> {
 
         let mut ws = key_to_hashbits(&key);
 
-        println!(
-            "set outer {:?}",
-            ws.iter()
-                .map(|w| format!("{:x}", w))
-                .collect::<Vec<String>>()
-        );
+        //println!(
+        //    "set outer {:?}",
+        //    ws.iter()
+        //        .map(|w| format!("{:x}", w))
+        //        .collect::<Vec<String>>()
+        //);
 
         'retry: loop {
             let mut inode: &In<K, V> = unsafe {
@@ -768,7 +768,7 @@ impl<K, V> Map<K, V> {
                         }
                     }
                 };
-                println!("set loop w:{:x}", w);
+                // println!("set loop w:{:x}", w);
 
                 let n = match node {
                     Node::Trie { bmp, .. } => match hamming_distance(w, bmp.clone()) {
@@ -786,7 +786,7 @@ impl<K, V> Map<K, V> {
                     Node::Tomb { .. } => continue 'retry,
                     Node::List { .. } => unreachable!(),
                 };
-                println!("set loop n:{}", n);
+                // println!("set loop n:{}", n);
 
                 let old_child_ptr = node.get_child(n);
                 inode = match unsafe { old_child_ptr.as_ref().unwrap() } {
@@ -818,7 +818,7 @@ impl<K, V> Map<K, V> {
                             let ls = key_to_hashbits(leaf_key)[..ws.len()].to_vec();
                             ws.clone().into_iter().zip(ls.into_iter()).collect()
                         };
-                        println!("set loop xs:{:?}", xs);
+                        // println!("set loop xs:{:?}", xs);
 
                         let node_ptr = Node::new_subtrie(&key, &value, leaf, xs, &mut op);
 
@@ -957,17 +957,9 @@ where
     key.hash(&mut hasher);
     let code: u64 = hasher.finish();
 
-    let xs: Vec<u8> = (0..8)
+    (0..8)
         .map(|i| ((code >> (i * 8)) & SLOT_MASK) as u8)
-        .collect();
-    println!(
-        "key_to_hashbits {:x}, {:?}",
-        code,
-        xs.iter()
-            .map(|x| format!("{:x}", x))
-            .collect::<Vec<String>>()
-    );
-    xs
+        .collect()
 }
 
 fn get_from_list<K, V, Q>(key: &Q, items: &[Item<K, V>]) -> Option<V>

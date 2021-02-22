@@ -149,13 +149,16 @@ fn with_btreemap(
                 assert_eq!(map.set(key, value).unwrap(), btmap.insert(key, value));
                 map.print();
             }
-            //Op::Remove(key) => {
-            //    counts[1] += 1;
-            //    assert_eq!(map.remove(&key), btmap.remove(&key));
-            //}
+            Op::Remove(key) => {
+                counts[1] += 1;
+                let map_val = map.remove(&key);
+                let btmap_val = btmap.remove(&key);
+                println!("remove {:?} {:?}", map_val, btmap_val);
+                assert_eq!(map_val, btmap_val);
+            }
             Op::Get(key) => {
                 counts[2] += 1;
-                println!("{:?} {:?}", map.get(&key), btmap.get(&key).cloned());
+                // println!("{:?} {:?}", map.get(&key), btmap.get(&key).cloned());
                 assert_eq!(map.get(&key), btmap.get(&key).cloned());
             }
         };
@@ -169,5 +172,5 @@ fn with_btreemap(
 enum Op<K, V> {
     Get(K),
     Set(K, V),
-    // Remove(K),
+    Remove(K),
 }
