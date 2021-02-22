@@ -1,5 +1,6 @@
 use std::{
     borrow::Borrow,
+    fmt::Debug,
     hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
@@ -66,6 +67,27 @@ impl<K, V> From<(K, V)> for Item<K, V> {
     }
 }
 
+impl<K, V> Item<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn print(&self, prefix: &str) {
+        println!("{}Item<{:?},{:?}>", prefix, self.key, self.value);
+    }
+}
+
+impl<K, V> In<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn print(&self, prefix: &str) {
+        let node = unsafe { self.node.load(SeqCst).as_ref().unwrap() };
+        node.print(prefix)
+    }
+}
+
 impl<K, V> Map<K, V>
 where
     K: 'static + Send,
@@ -83,16 +105,18 @@ where
             Arc::new(AtomicPtr::new(Box::leak(inode)))
         };
 
+        let epoch = Arc::new(AtomicU64::new(1));
+
         let access_log = Arc::new(RwLock::new(vec![Arc::new(AtomicU64::new(1))]));
         let (tx, rx) = mpsc::channel();
 
-        let log = Arc::clone(&access_log);
-        let handle = thread::spawn(move || gc_thread(log, rx));
+        let args = (Arc::clone(&epoch), Arc::clone(&access_log));
+        let handle = thread::spawn(move || gc_thread(args.0, args.1, rx));
 
         Map {
             id: 0,
             root,
-            epoch: Arc::new(AtomicU64::new(1)),
+            epoch,
             access_log,
             handle: Arc::new(handle),
             tx,
@@ -113,6 +137,18 @@ where
             handle: Arc::clone(&self.handle),
             tx: self.tx.clone(),
         }
+    }
+
+    pub fn print(&self)
+    where
+        K: Debug,
+        V: Debug,
+    {
+        let epoch = self.epoch.load(SeqCst);
+        let guard = self.access_log.write().expect("lock-panic");
+        let access_log = guard.iter().map(|e| e.load(SeqCst));
+        println!("Map<{},{:?}", epoch, access_log);
+        unsafe { self.root.load(SeqCst).as_ref().unwrap().print("  ") };
     }
 }
 
@@ -171,6 +207,49 @@ impl<K, V> Node<K, V> {
             Node::Tomb { .. } | Node::List { .. } => (),
         }
     }
+
+    fn print(&self, prefix: &str)
+    where
+        K: Debug,
+        V: Debug,
+    {
+        match self {
+            Node::Trie { bmp, childs } => {
+                println!(
+                    "{}Node::Trie<{:x}-{:x},{}>",
+                    prefix,
+                    bmp[1],
+                    bmp[0],
+                    childs.len()
+                );
+                let prefix = prefix.to_string() + "  ";
+                for child in childs {
+                    match unsafe { child.load(SeqCst).as_ref().unwrap() } {
+                        Child::Leaf(item) => {
+                            println!("{}Child::Leaf", prefix);
+                            let prefix = prefix.to_string() + "  ";
+                            item.print(&prefix);
+                        }
+                        Child::Deep(inode) => {
+                            println!("{}Child::Inode", prefix);
+                            let prefix = prefix.to_string() + "  ";
+                            inode.print(&prefix);
+                        }
+                    }
+                }
+            }
+            Node::Tomb { item } => {
+                println!("{}Node::Tomb", prefix);
+                let prefix = prefix.to_string() + "  ";
+                item.print(&prefix);
+            }
+            Node::List { items } => {
+                println!("{}Node::List", prefix);
+                let prefix = prefix.to_string() + "  ";
+                items.iter().for_each(|item| item.print(&prefix));
+            }
+        }
+    }
 }
 
 impl<K, V> Node<K, V> {
@@ -200,7 +279,8 @@ impl<K, V> Node<K, V> {
             return Node::new_list(vec![item, leaf.clone()], &mut op.cas);
         }
 
-        let (w1, w2) = pairs.remove(0);
+        let (w1, w2) = pairs.pop().unwrap();
+        println!("new subtrie:{:x},{:x}", w1, w2);
 
         if w1 == w2 {
             let mut node = {
@@ -218,16 +298,25 @@ impl<K, V> Node<K, V> {
             op.cas.free_on_fail(gc::Mem::Node(node_ptr));
             node_ptr
         } else {
-            let mut node = {
-                // two-child node trie.
-                let child1_ptr = Child::new_leaf_from(key, value, &mut op.cas);
-                let child2_ptr = Child::new_leaf(leaf.clone(), &mut op.cas);
-                let childs = vec![AtomicPtr::new(child1_ptr), AtomicPtr::new(child2_ptr)];
-
-                let bmp = [0_u128; 2];
-                Box::new(Node::Trie { bmp, childs })
-            };
+            let child1 = AtomicPtr::new(Child::new_leaf_from(key, value, &mut op.cas));
+            let (bmp, childs) = ([0_u128; 2], vec![child1]);
+            let mut node = Node::Trie { bmp, childs };
             node.hamming_set(w1);
+
+            let mut node = match node {
+                Node::Trie { bmp, mut childs } => {
+                    let n = match hamming_distance(w2, bmp.clone()) {
+                        Distance::Insert(n) => n,
+                        Distance::Set(_) => unreachable!(),
+                    };
+                    childs.insert(
+                        n,
+                        AtomicPtr::new(Child::new_leaf(leaf.clone(), &mut op.cas)),
+                    );
+                    Box::new(Node::Trie { bmp, childs })
+                }
+                _ => unreachable!(),
+            };
             node.hamming_set(w2);
             let node_ptr = Box::leak(node);
 
@@ -649,8 +738,18 @@ impl<K, V> Map<K, V> {
 
         let mut ws = key_to_hashbits(&key);
 
+        println!(
+            "set outer {:?}",
+            ws.iter()
+                .map(|w| format!("{:x}", w))
+                .collect::<Vec<String>>()
+        );
+
         'retry: loop {
-            let mut inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
+            let mut inode: &In<K, V> = unsafe {
+                //
+                self.root.load(SeqCst).as_ref().unwrap()
+            };
 
             loop {
                 let old: *mut Node<K, V> = inode.node.load(SeqCst);
@@ -669,6 +768,7 @@ impl<K, V> Map<K, V> {
                         }
                     }
                 };
+                println!("set loop w:{:x}", w);
 
                 let n = match node {
                     Node::Trie { bmp, .. } => match hamming_distance(w, bmp.clone()) {
@@ -686,6 +786,7 @@ impl<K, V> Map<K, V> {
                     Node::Tomb { .. } => continue 'retry,
                     Node::List { .. } => unreachable!(),
                 };
+                println!("set loop n:{}", n);
 
                 let old_child_ptr = node.get_child(n);
                 inode = match unsafe { old_child_ptr.as_ref().unwrap() } {
@@ -695,7 +796,7 @@ impl<K, V> Map<K, V> {
                         let op = CasOp { inode, old, cas };
 
                         match Node::set_child(&key, &value, n, op) {
-                            CasRc::Ok(_) => break 'retry Ok(None),
+                            CasRc::Ok(_) => break 'retry Ok(Some(item.value.clone())),
                             CasRc::Retry => continue 'retry,
                         }
                     }
@@ -717,6 +818,7 @@ impl<K, V> Map<K, V> {
                             let ls = key_to_hashbits(leaf_key)[..ws.len()].to_vec();
                             ws.clone().into_iter().zip(ls.into_iter()).collect()
                         };
+                        println!("set loop xs:{:?}", xs);
 
                         let node_ptr = Node::new_subtrie(&key, &value, leaf, xs, &mut op);
 
@@ -828,13 +930,14 @@ enum Distance {
 }
 
 fn hamming_distance(w: u8, bmp: [u128; 2]) -> Distance {
+    let prefix = if w < 128 { 0 } else { bmp[0].count_ones() };
     let posn = 1_u128 << (w % 128);
     let mask: u128 = !(posn - 1);
     let bmp: u128 = if w < 128 { bmp[0] } else { bmp[1] };
 
     let (x, y) = ((bmp & mask), bmp);
     // TODO: optimize it with SSE or popcnt instructions, figure-out a way.
-    let dist = (x ^ y).count_ones() as usize;
+    let dist = (prefix + (x ^ y).count_ones()) as usize;
 
     match bmp & posn {
         0 => Distance::Insert(dist),
@@ -854,9 +957,17 @@ where
     key.hash(&mut hasher);
     let code: u64 = hasher.finish();
 
-    (0..8)
+    let xs: Vec<u8> = (0..8)
         .map(|i| ((code >> (i * 8)) & SLOT_MASK) as u8)
-        .collect()
+        .collect();
+    println!(
+        "key_to_hashbits {:x}, {:?}",
+        code,
+        xs.iter()
+            .map(|x| format!("{:x}", x))
+            .collect::<Vec<String>>()
+    );
+    xs
 }
 
 fn get_from_list<K, V, Q>(key: &Q, items: &[Item<K, V>]) -> Option<V>

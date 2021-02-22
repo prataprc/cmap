@@ -107,7 +107,11 @@ pub enum Reclaim<K, V> {
     Node { epoch: u64, node: Box<Node<K, V>> },
 }
 
-pub fn gc_thread<K, V>(access_log: Epochs, rx: mpsc::Receiver<Reclaim<K, V>>) {
+pub fn gc_thread<K, V>(
+    epoch: Arc<AtomicU64>,
+    access_log: Epochs,
+    rx: mpsc::Receiver<Reclaim<K, V>>,
+) {
     let mut objs = vec![];
     loop {
         sleep(Duration::from_millis(1));
@@ -127,17 +131,20 @@ pub fn gc_thread<K, V>(access_log: Epochs, rx: mpsc::Receiver<Reclaim<K, V>>) {
             // TODO: no magic
             let epochs: Vec<u64> = {
                 let iter = log.iter().map(|acc| acc.load(SeqCst));
-                iter.filter_map(|epoch| {
-                    if epoch & 0x8000000000000000 == 0 {
-                        None
+                iter.filter_map(|el| {
+                    if el & 0x8000000000000000 == 0 {
+                        Some(el & 0x7FFFFFFFFFFFFFFF)
                     } else {
-                        Some(epoch & 0x7FFFFFFFFFFFFFFF)
+                        Some(epoch.load(SeqCst))
                     }
                 })
                 .collect()
             };
             // TODO: no magic
-            let gc = epochs.clone().into_iter().min().unwrap() - 10;
+            let gc = match epochs.clone().into_iter().min() {
+                Some(gc) => gc.saturating_sub(10),
+                None => continue,
+            };
             let exited = epochs.into_iter().all(|acc| acc == 0);
             (gc, exited)
         };

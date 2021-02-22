@@ -74,9 +74,12 @@ fn test_hamming_distance() {
     ];
     for w in 0..=255 {
         let o = ((w % 128) / 2) as usize;
+        let dist = hamming_distance(w, bmp.clone());
         match w % 2 {
-            0 => assert_eq!(hamming_distance(w, bmp.clone()), Distance::Insert(o)),
-            1 => assert_eq!(hamming_distance(w, bmp.clone()), Distance::Set(o)),
+            0 if w < 128 => assert_eq!(dist, Distance::Insert(o)),
+            0 => assert_eq!(dist, Distance::Insert(64 + o)),
+            1 if w < 128 => assert_eq!(dist, Distance::Set(o)),
+            1 => assert_eq!(dist, Distance::Set(64 + o)),
             _ => unreachable!(),
         }
     }
@@ -87,9 +90,12 @@ fn test_hamming_distance() {
     ];
     for w in 0..=255 {
         let o = ((w % 128) / 2) as usize;
+        let dist = hamming_distance(w, bmp.clone());
         match w % 2 {
-            0 => assert_eq!(hamming_distance(w, bmp.clone()), Distance::Set(o)),
-            1 => assert_eq!(hamming_distance(w, bmp.clone()), Distance::Insert(o + 1)),
+            0 if w < 128 => assert_eq!(dist, Distance::Set(o)),
+            0 => assert_eq!(dist, Distance::Set(64 + o)),
+            1 if w < 128 => assert_eq!(dist, Distance::Insert(o + 1)),
+            1 => assert_eq!(dist, Distance::Insert(64 + o + 1)),
             _ => unreachable!(),
         }
     }
@@ -141,6 +147,7 @@ fn with_btreemap(
             Op::Set(key, value) => {
                 counts[0] += 1;
                 assert_eq!(map.set(key, value).unwrap(), btmap.insert(key, value));
+                map.print();
             }
             //Op::Remove(key) => {
             //    counts[1] += 1;
