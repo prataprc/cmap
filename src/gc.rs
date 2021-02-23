@@ -11,8 +11,6 @@ use crate::{map::Child, map::Node};
 
 // CAS operation
 
-pub type Epochs = Arc<RwLock<Vec<Arc<AtomicU64>>>>;
-
 pub struct Epoch {
     epoch: Arc<AtomicU64>,
     at: Arc<AtomicU64>,
@@ -109,7 +107,7 @@ pub enum Reclaim<K, V> {
 
 pub fn gc_thread<K, V>(
     epoch: Arc<AtomicU64>,
-    access_log: Epochs,
+    access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
     rx: mpsc::Receiver<Reclaim<K, V>>,
 ) {
     let mut objs = vec![];

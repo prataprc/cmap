@@ -1,7 +1,7 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 
-use std::{collections::BTreeMap, ops::Bound, thread};
+use std::{collections::BTreeMap, ops, thread};
 
 use super::*;
 
@@ -106,29 +106,40 @@ fn test_map() {
     let seed: u128 = random();
     let seed: u128 = 108608880608704922882102056739567863183;
     println!("test_map seed {}", seed);
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let n_init = 1_000;
-    let n_incr = 1_000;
-    let n_threads = 8;
+    let n_init = 1_000_000; // TODO
+    let n_incr = 1_000; // TODO
+    let n_threads = 2; // TODO
+    let modul = Ky::MAX / n_threads;
 
     let map: Map<Ky, u64> = Map::new();
-    let mut btmap: BTreeMap<Ky, u64> = BTreeMap::new();
-
     let mut handles = vec![];
-    let id = 0;
-    let seed = seed + ((id as u128) * 100);
-    let h = thread::spawn(move || with_btreemap(id, seed, n_init, map, btmap));
-    handles.push(h);
+    for id in 0..n_threads {
+        let seed = seed + ((id as u128) * 100);
 
-    for handle in handles.into_iter() {
-        btmap = handle.join().unwrap();
+        let map = map.cloned();
+        let mut btmap: BTreeMap<Ky, u64> = BTreeMap::new();
+        let h = thread::spawn(move || with_btreemap(id, seed, modul, n_init, map, btmap));
+
+        handles.push(h);
     }
+
+    let mut btmaps = vec![];
+    for handle in handles.into_iter() {
+        btmaps.push(handle.join().unwrap());
+    }
+
+    //assert_eq!(map.len(), btmaps[0].len());
+
+    //for (key, val) in btmaps[0].iter() {
+    //    assert_eq!(map.get(key), Some(val.clone()));
+    //}
 }
 
 fn with_btreemap(
-    id: usize,
+    id: Ky,
     seed: u128,
+    modul: Ky,
     n: usize,
     map: Map<Ky, u64>,
     mut btmap: BTreeMap<Ky, u64>,
@@ -141,25 +152,45 @@ fn with_btreemap(
         let bytes = rng.gen::<[u8; 32]>();
         let mut uns = Unstructured::new(&bytes);
 
-        let op: Op<Ky, u64> = uns.arbitrary().unwrap();
+        let mut op: Op<Ky, u64> = uns.arbitrary().unwrap();
+        op = op.adjust_key(id, modul);
         println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
+                // map.print();
                 counts[0] += 1;
-                assert_eq!(map.set(key, value).unwrap(), btmap.insert(key, value));
-                map.print();
+                let map_val = map.set(key, value).unwrap();
+                let btmap_val = btmap.insert(key, value);
+                if map_val != btmap_val {
+                    map.print();
+                }
+                assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Remove(key) => {
-                counts[1] += 1;
-                let map_val = map.remove(&key);
-                let btmap_val = btmap.remove(&key);
-                println!("remove {:?} {:?}", map_val, btmap_val);
-                assert_eq!(map_val, btmap_val);
+                //// map.print();
+                //if key == 4394 {
+                //    map.print()
+                //}
+
+                //counts[1] += 1;
+                //let map_val = map.remove(&key);
+                //let btmap_val = btmap.remove(&key);
+
+                //if map_val != btmap_val {
+                //    map.print();
+                //}
+                //assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Get(key) => {
+                map.print();
                 counts[2] += 1;
                 // println!("{:?} {:?}", map.get(&key), btmap.get(&key).cloned());
-                assert_eq!(map.get(&key), btmap.get(&key).cloned());
+                let map_val = map.get(&key);
+                let btmap_val = btmap.get(&key).cloned();
+                if map_val != btmap_val {
+                    map.print();
+                }
+                assert_eq!(map_val, btmap_val, "key {}", key);
             }
         };
     }
@@ -173,4 +204,17 @@ enum Op<K, V> {
     Get(K),
     Set(K, V),
     Remove(K),
+}
+
+impl<K, V> Op<K, V>
+where
+    K: Copy + ops::Mul<Output = K> + ops::Rem<Output = K> + ops::Add<Output = K>,
+{
+    fn adjust_key(self, id: K, modul: K) -> Self {
+        match self {
+            Op::Get(key) => Op::Get((id * modul) + (key % modul)),
+            Op::Set(key, value) => Op::Set((id * modul) + (key % modul), value),
+            Op::Remove(key) => Op::Remove((id * modul) + (key % modul)),
+        }
+    }
 }
