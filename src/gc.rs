@@ -3,11 +3,15 @@ use std::{
         atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
         mpsc, Arc, RwLock,
     },
-    thread::sleep,
-    time::Duration,
+    thread, time,
 };
 
 use crate::{map::Child, map::Node};
+
+const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(100);
+const RX_TIMEOUT: time::Duration = time::Duration::from_secs(10);
+const ENTER_MASK: u64 = 0x8000000000000000;
+const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
 
 // CAS operation
 
@@ -18,7 +22,7 @@ pub struct Epoch {
 
 impl Epoch {
     pub fn new(epoch: Arc<AtomicU64>, at: Arc<AtomicU64>) -> Epoch {
-        at.store(epoch.load(SeqCst) | 0x8000000000000000, SeqCst);
+        at.store(epoch.load(SeqCst) | ENTER_MASK, SeqCst);
         Epoch { epoch, at }
     }
 }
@@ -112,55 +116,54 @@ pub fn gc_thread<K, V>(
 ) {
     let mut objs = vec![];
     loop {
-        sleep(Duration::from_millis(1));
-        // TODO: no magic number
-        match rx.recv_timeout(Duration::from_secs(10)) {
+        thread::sleep(EPOCH_PERIOD);
+        match rx.recv_timeout(RX_TIMEOUT) {
             Ok(recl) => objs.push(recl),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                todo!()
+                println!("exiting epoch-gc, disconnected");
+                break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                todo!()
+                println!("exiting epoch-gc, timeout");
+                break;
             }
         }
 
         let (gc, exited) = {
             let log = access_log.read().expect("fail-lock");
-            // TODO: no magic
             let epochs: Vec<u64> = {
                 let iter = log.iter().map(|acc| acc.load(SeqCst));
                 iter.filter_map(|el| {
-                    if el & 0x8000000000000000 == 0 {
-                        Some(el & 0x7FFFFFFFFFFFFFFF)
+                    if el & ENTER_MASK == 0 {
+                        Some(el & EPOCH_MASK)
                     } else {
                         Some(epoch.load(SeqCst))
                     }
                 })
                 .collect()
             };
-            // TODO: no magic
             let gc = match epochs.clone().into_iter().min() {
-                Some(gc) => gc.saturating_sub(10),
+                Some(gc) => gc,
                 None => continue,
             };
             let exited = epochs.into_iter().all(|acc| acc == 0);
             (gc, exited)
         };
 
+        if exited {
+            println!("exiting with pending allocs {}", objs.len());
+            break;
+        }
+
         let mut new_objs = vec![];
         for obj in objs.into_iter() {
             match obj {
-                Reclaim::Child { epoch, .. } if epoch >= gc => new_objs.push(obj),
-                Reclaim::Child { .. } => (),
-                Reclaim::Node { epoch, .. } if epoch >= gc => new_objs.push(obj),
-                Reclaim::Node { .. } => (),
+                Reclaim::Child { epoch, .. } if epoch < gc => (),
+                Reclaim::Node { epoch, .. } if epoch < gc => (),
+                _ => new_objs.push(obj),
             }
         }
 
         objs = new_objs;
-
-        if exited {
-            todo!()
-        }
     }
 }

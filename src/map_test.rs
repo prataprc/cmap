@@ -1,7 +1,11 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 
-use std::{collections::BTreeMap, ops, thread};
+use std::{
+    collections::BTreeMap,
+    ops::{Add, Div, Mul, Rem},
+    thread,
+};
 
 use super::*;
 
@@ -107,9 +111,8 @@ fn test_map() {
     let seed: u128 = 108608880608704922882102056739567863183;
     println!("test_map seed {}", seed);
 
-    let n_init = 1_000_000; // TODO
-    let n_incr = 1_000; // TODO
-    let n_threads = 2; // TODO
+    let n_ops = 1_000_000; // TODO
+    let n_threads = 1; // TODO
     let modul = Ky::MAX / n_threads;
 
     let map: Map<Ky, u64> = Map::new();
@@ -118,8 +121,8 @@ fn test_map() {
         let seed = seed + ((id as u128) * 100);
 
         let map = map.cloned();
-        let mut btmap: BTreeMap<Ky, u64> = BTreeMap::new();
-        let h = thread::spawn(move || with_btreemap(id, seed, modul, n_init, map, btmap));
+        let btmap: BTreeMap<Ky, u64> = BTreeMap::new();
+        let h = thread::spawn(move || with_btreemap(id, seed, modul, n_ops, map, btmap));
 
         handles.push(h);
     }
@@ -140,7 +143,7 @@ fn with_btreemap(
     id: Ky,
     seed: u128,
     modul: Ky,
-    n: usize,
+    n_ops: usize,
     map: Map<Ky, u64>,
     mut btmap: BTreeMap<Ky, u64>,
 ) -> BTreeMap<Ky, u64> {
@@ -148,17 +151,19 @@ fn with_btreemap(
 
     let mut counts = [0_usize; 3];
 
-    for _i in 0..n {
+    for _i in 0..n_ops {
         let bytes = rng.gen::<[u8; 32]>();
         let mut uns = Unstructured::new(&bytes);
 
         let mut op: Op<Ky, u64> = uns.arbitrary().unwrap();
-        op = op.adjust_key(id, modul);
+        op = op.adjust_key(id, modul, 16);
         println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
-                // map.print();
+                map.print();
+
                 counts[0] += 1;
+
                 let map_val = map.set(key, value).unwrap();
                 let btmap_val = btmap.insert(key, value);
                 if map_val != btmap_val {
@@ -167,26 +172,25 @@ fn with_btreemap(
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Remove(key) => {
-                //// map.print();
-                //if key == 4394 {
-                //    map.print()
-                //}
+                // map.print();
 
-                //counts[1] += 1;
-                //let map_val = map.remove(&key);
-                //let btmap_val = btmap.remove(&key);
+                counts[1] += 1;
 
-                //if map_val != btmap_val {
-                //    map.print();
-                //}
-                //assert_eq!(map_val, btmap_val, "key {}", key);
+                let map_val = map.remove(&key);
+                let btmap_val = btmap.remove(&key);
+                if map_val != btmap_val {
+                    map.print();
+                }
+                assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Get(key) => {
-                map.print();
+                // map.print();
+
                 counts[2] += 1;
-                // println!("{:?} {:?}", map.get(&key), btmap.get(&key).cloned());
+
                 let map_val = map.get(&key);
                 let btmap_val = btmap.get(&key).cloned();
+                // println!("{:?} {:?}", map_val, btmap_val);
                 if map_val != btmap_val {
                     map.print();
                 }
@@ -208,13 +212,25 @@ enum Op<K, V> {
 
 impl<K, V> Op<K, V>
 where
-    K: Copy + ops::Mul<Output = K> + ops::Rem<Output = K> + ops::Add<Output = K>,
+    K: Copy + Mul<Output = K> + Rem<Output = K> + Add<Output = K> + Div<Output = K>,
 {
-    fn adjust_key(self, id: K, modul: K) -> Self {
+    fn adjust_key(self, id: K, modul: K, div: K) -> Self {
         match self {
-            Op::Get(key) => Op::Get((id * modul) + (key % modul)),
-            Op::Set(key, value) => Op::Set((id * modul) + (key % modul), value),
-            Op::Remove(key) => Op::Remove((id * modul) + (key % modul)),
+            Op::Get(key) => {
+                let key = key / div;
+                let key = (id * modul) + (key % modul);
+                Op::Get((id * modul) + (key % modul))
+            }
+            Op::Set(key, value) => {
+                let key = key / div;
+                let key = (id * modul) + (key % modul);
+                Op::Set(key, value)
+            }
+            Op::Remove(key) => {
+                let key = key / div;
+                let key = (id * modul) + (key % modul);
+                Op::Remove(key)
+            }
         }
     }
 }
