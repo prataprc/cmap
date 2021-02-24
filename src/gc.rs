@@ -164,13 +164,13 @@ pub fn gc_thread<K, V>(
         }
         objs = new_objs;
 
-        //println!(
-        //    "garbage collected epoch:{} exited:{} {}/{}",
-        //    gc,
-        //    exited,
-        //    _n,
-        //    objs.len()
-        //);
+        println!(
+            "garbage collected epoch:{} exited:{} {}/{}",
+            gc,
+            exited,
+            _n,
+            objs.len()
+        );
     }
 
     println!("exiting with pending allocs {}", objs.len());
