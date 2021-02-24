@@ -2,11 +2,12 @@ use std::{
     borrow::Borrow,
     fmt::Debug,
     hash::{Hash, Hasher},
+    mem,
     sync::{
         atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
         mpsc, Arc, RwLock,
     },
-    thread,
+    thread, time,
 };
 
 use crate::{
@@ -39,8 +40,8 @@ pub struct Map<K, V> {
     epoch: Arc<AtomicU64>,
     access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
 
-    handle: Arc<thread::JoinHandle<()>>,
-    tx: mpsc::Sender<Reclaim<K, V>>,
+    handle: Arc<Option<thread::JoinHandle<()>>>,
+    tx: Option<mpsc::Sender<Reclaim<K, V>>>,
 }
 
 pub struct In<K, V> {
@@ -100,8 +101,25 @@ where
 
 impl<K, V> Drop for Map<K, V> {
     fn drop(&mut self) {
-        let access_log = self.access_log.write().expect("lock-panic");
-        access_log[self.id].store(0, SeqCst)
+        {
+            let access_log = self.access_log.write().expect("lock-panic");
+            access_log[self.id].store(0, SeqCst);
+        }
+        mem::drop(self.tx.take());
+
+        if self.id == 0 {
+            loop {
+                match Arc::get_mut(&mut self.handle).take() {
+                    Some(handle) => {
+                        handle.take().unwrap().join().ok(); // TODO handle error
+                        break;
+                    }
+                    None => thread::sleep(time::Duration::from_millis(10)),
+                }
+            }
+            let inode = unsafe { Box::from_raw(self.root.load(SeqCst)) };
+            Node::free(inode.node.load(SeqCst));
+        }
     }
 }
 
@@ -126,9 +144,10 @@ where
 
         let access_log = Arc::new(RwLock::new(vec![Arc::new(AtomicU64::new(1))]));
         let (tx, rx) = mpsc::channel();
-
-        let args = (Arc::clone(&epoch), Arc::clone(&access_log));
-        let handle = thread::spawn(move || gc_thread(args.0, args.1, rx));
+        let handle = {
+            let args = (Arc::clone(&epoch), Arc::clone(&access_log));
+            thread::spawn(move || gc_thread(args.0, args.1, rx))
+        };
 
         Map {
             id: 0,
@@ -137,8 +156,8 @@ where
             epoch,
             access_log,
 
-            handle: Arc::new(handle),
-            tx,
+            handle: Arc::new(Some(handle)),
+            tx: Some(tx),
         }
     }
 
@@ -175,16 +194,22 @@ where
 
 impl<K, V> Map<K, V> {
     fn generate_cas(&self) -> Cas<K, V> {
-        Cas::new(&self.tx, Arc::clone(&self.epoch))
+        Cas::new(self.tx.as_ref().unwrap(), &self.epoch)
     }
 
     fn generate_epoch(&self) -> Epoch {
-        let epoch = Arc::clone(&self.epoch);
-        let at = {
-            let access_log = self.access_log.read().expect("lock-panic");
-            Arc::clone(&access_log[self.id])
+        let epoch = {
+            let at = {
+                let access_log = self.access_log.read().expect("lock-panic");
+                Arc::clone(&access_log[self.id])
+            };
+            let epoch = Arc::clone(&self.epoch);
+            Epoch::new(epoch, at)
         };
-        Epoch::new(epoch, at)
+
+        self.epoch.fetch_add(1, SeqCst);
+
+        epoch
     }
 }
 
@@ -288,6 +313,19 @@ impl<K, V> Node<K, V> {
             }
             Node::List { items } => items.len(),
             Node::Tomb { .. } => 1,
+        }
+    }
+
+    fn free(node: *mut Node<K, V>) {
+        let node = unsafe { Box::from_raw(node) };
+        match node.as_ref() {
+            Node::Trie { bmp: _bmp, childs } => {
+                for child in childs.iter() {
+                    Child::free(child.load(SeqCst))
+                }
+            }
+            Node::Tomb { .. } => (),
+            Node::List { .. } => (),
         }
     }
 }
@@ -589,11 +627,29 @@ impl<K, V> Node<K, V> {
                         .map(|c| AtomicPtr::new(c.load(SeqCst)))
                         .collect();
                     childs.remove(n);
-                    let bmp = bmp.clone();
+                    assert!(childs.len() > 0, "unexpected num childs {}", childs.len());
 
-                    let mut node = Box::new(Node::Trie { bmp, childs });
-                    node.hamming_reset(w);
-                    node
+                    if childs.len() == 1 {
+                        let old_child_ptr = childs.remove(0).load(SeqCst);
+                        match unsafe { old_child_ptr.as_ref().unwrap() }.to_leaf_item() {
+                            Some(item) => {
+                                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                                Node::new_tomb(item)
+                            }
+                            None => {
+                                childs.insert(0, AtomicPtr::new(old_child_ptr));
+                                let bmp = bmp.clone();
+                                let mut node = Box::new(Node::Trie { bmp, childs });
+                                node.hamming_reset(w);
+                                node
+                            }
+                        }
+                    } else {
+                        let bmp = bmp.clone();
+                        let mut node = Box::new(Node::Trie { bmp, childs });
+                        node.hamming_reset(w);
+                        node
+                    }
                 };
 
                 let new = Box::leak(node);
@@ -723,6 +779,14 @@ impl<K, V> Child<K, V> {
         match self {
             Child::Leaf(leaf) => Some(leaf.clone()),
             Child::Deep(_) => None,
+        }
+    }
+
+    fn free(child: *mut Child<K, V>) {
+        let child = unsafe { Box::from_raw(child) };
+        match child.as_ref() {
+            Child::Leaf(_item) => (),
+            Child::Deep(inode) => Node::free(inode.node.load(SeqCst)),
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::{
         atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
         mpsc, Arc, RwLock,
@@ -9,7 +10,6 @@ use std::{
 use crate::{map::Child, map::Node};
 
 const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(100);
-const RX_TIMEOUT: time::Duration = time::Duration::from_secs(10);
 const ENTER_MASK: u64 = 0x8000000000000000;
 const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
 
@@ -34,14 +34,14 @@ impl Drop for Epoch {
 }
 
 pub struct Cas<'a, K, V> {
-    epoch: Arc<AtomicU64>,
+    epoch: &'a Arc<AtomicU64>,
     tx: &'a mpsc::Sender<Reclaim<K, V>>,
     pass: Vec<Mem<K, V>>,
     fail: Vec<Mem<K, V>>,
 }
 
 impl<'a, K, V> Cas<'a, K, V> {
-    pub fn new(tx: &'a mpsc::Sender<Reclaim<K, V>>, epoch: Arc<AtomicU64>) -> Self {
+    pub fn new(tx: &'a mpsc::Sender<Reclaim<K, V>>, epoch: &'a Arc<AtomicU64>) -> Self {
         Cas {
             epoch,
             tx,
@@ -81,13 +81,11 @@ impl<K, V> Mem<K, V> {
         match self {
             Mem::Child(ptr) => {
                 let child = unsafe { Box::from_raw(ptr) };
-                let rclm = Reclaim::Child { epoch, child };
-                tx.send(rclm).expect("ipc-fail");
+                tx.send(Reclaim::Child { epoch, child }).expect("ipc-fail");
             }
             Mem::Node(ptr) => {
                 let node = unsafe { Box::from_raw(ptr) };
-                let rclm = Reclaim::Node { epoch, node };
-                tx.send(rclm).expect("ipc-fail");
+                tx.send(Reclaim::Node { epoch, node }).expect("ipc-fail");
             }
         }
     }
@@ -115,44 +113,46 @@ pub fn gc_thread<K, V>(
     rx: mpsc::Receiver<Reclaim<K, V>>,
 ) {
     let mut objs = vec![];
+
     loop {
         thread::sleep(EPOCH_PERIOD);
-        match rx.recv_timeout(RX_TIMEOUT) {
-            Ok(recl) => objs.push(recl),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                println!("exiting epoch-gc, disconnected");
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                println!("exiting epoch-gc, timeout");
-            }
+        let (mut fresh, exit) = receive_blocks(&rx);
+        objs.append(&mut fresh);
+        if exit {
+            break;
         }
 
         let (gc, exited) = {
             let log = access_log.read().expect("fail-lock");
-            let epochs: Vec<u64> = {
-                let iter = log.iter().map(|acc| acc.load(SeqCst));
-                iter.filter_map(|el| {
-                    if el & ENTER_MASK == 0 {
-                        Some(el & EPOCH_MASK)
-                    } else {
-                        Some(epoch.load(SeqCst))
-                    }
-                })
-                .collect()
+            let (epochs, exited): (Vec<u64>, bool) = {
+                let epochs: Vec<u64> = log.iter().map(|acc| acc.load(SeqCst)).collect();
+                (
+                    epochs
+                        .clone()
+                        .into_iter()
+                        .map(|el| {
+                            if el & ENTER_MASK == 0 {
+                                epoch.load(SeqCst)
+                            } else {
+                                el & EPOCH_MASK
+                            }
+                        })
+                        .collect(),
+                    epochs.into_iter().all(|epoch| epoch == 0),
+                )
             };
             let gc = match epochs.clone().into_iter().min() {
                 Some(gc) => gc,
                 None => continue,
             };
-            let exited = epochs.into_iter().all(|acc| acc == 0);
             (gc, exited)
         };
 
         if exited {
-            println!("exiting with pending allocs {}", objs.len());
             break;
         }
+
+        let _n = objs.len();
 
         let mut new_objs = vec![];
         for obj in objs.into_iter() {
@@ -162,7 +162,34 @@ pub fn gc_thread<K, V>(
                 _ => new_objs.push(obj),
             }
         }
-
         objs = new_objs;
+
+        //println!(
+        //    "garbage collected epoch:{} exited:{} {}/{}",
+        //    gc,
+        //    exited,
+        //    _n,
+        //    objs.len()
+        //);
     }
+
+    println!("exiting with pending allocs {}", objs.len());
+    mem::drop(objs);
+}
+
+fn receive_blocks<K, V>(rx: &mpsc::Receiver<Reclaim<K, V>>) -> (Vec<Reclaim<K, V>>, bool) {
+    let mut objs = vec![];
+    // TODO: no magic number
+    while objs.len() < 1_000_000_000 {
+        match rx.try_recv() {
+            Ok(recl) => objs.push(recl),
+            Err(mpsc::TryRecvError::Empty) => return (objs, false),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                #[cfg(test)]
+                println!("exiting epoch-gc, disconnected");
+                return (objs, true);
+            }
+        }
+    }
+    (objs, false)
 }
