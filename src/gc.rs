@@ -125,7 +125,6 @@ pub fn gc_thread<K, V>(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 println!("exiting epoch-gc, timeout");
-                break;
             }
         }
 

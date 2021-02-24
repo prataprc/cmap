@@ -112,7 +112,7 @@ fn test_map() {
     println!("test_map seed {}", seed);
 
     let n_ops = 1_000_000; // TODO
-    let n_threads = 1; // TODO
+    let n_threads = 16; // TODO
     let modul = Ky::MAX / n_threads;
 
     let map: Map<Ky, u64> = Map::new();
@@ -156,11 +156,11 @@ fn with_btreemap(
         let mut uns = Unstructured::new(&bytes);
 
         let mut op: Op<Ky, u64> = uns.arbitrary().unwrap();
-        op = op.adjust_key(id, modul, 16);
-        println!("{}-op -- {:?}", id, op);
+        op = op.adjust_key(id, modul, 1);
+        // println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
-                map.print();
+                // map.print();
 
                 counts[0] += 1;
 
