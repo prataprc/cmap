@@ -16,7 +16,7 @@ use crate::{
     Result,
 };
 
-const SLOT_MASK: u64 = 0xFF;
+const SLOT_MASK: u32 = 0xF;
 
 #[allow(unused_macros)]
 macro_rules! print_ws {
@@ -54,7 +54,7 @@ pub struct In<K, V> {
 
 pub enum Node<K, V> {
     Trie {
-        bmp: [u128; 2],
+        bmp: u16,
         childs: Vec<AtomicPtr<Child<K, V>>>,
     },
     Tomb {
@@ -142,7 +142,7 @@ where
     pub fn new() -> Map<K, V> {
         let root = {
             let node = Box::new(Node::Trie {
-                bmp: [0_u128; 2],
+                bmp: u16::default(),
                 childs: Vec::default(),
             });
             let inode = Box::new(In {
@@ -255,8 +255,7 @@ impl<K, V> Node<K, V> {
     fn hamming_set(&mut self, w: u8) {
         match self {
             Node::Trie { bmp, .. } => {
-                let off = if w < 128 { 0 } else { 1 };
-                bmp[off] = bmp[off] | 1 << (w % 128);
+                *bmp = *bmp | (1 << w);
             }
             Node::Tomb { .. } | Node::List { .. } => (),
         }
@@ -265,8 +264,7 @@ impl<K, V> Node<K, V> {
     fn hamming_reset(&mut self, w: u8) {
         match self {
             Node::Trie { bmp, .. } => {
-                let off = if w < 128 { 0 } else { 1 };
-                bmp[off] = bmp[off] & (!(1 << (w % 128)));
+                *bmp = *bmp & (!(1 << w));
             }
             Node::Tomb { .. } | Node::List { .. } => (),
         }
@@ -279,13 +277,7 @@ impl<K, V> Node<K, V> {
     {
         match self {
             Node::Trie { bmp, childs } => {
-                println!(
-                    "{}Node::Trie<{:x}-{:x},{}>",
-                    prefix,
-                    bmp[1],
-                    bmp[0],
-                    childs.len()
-                );
+                println!("{}Node::Trie<{:x},{}>", prefix, bmp, childs.len());
                 let prefix = prefix.to_string() + "  ";
                 for child in childs {
                     match unsafe { child.load(SeqCst).as_ref().unwrap() } {
@@ -389,14 +381,14 @@ impl<K, V> Node<K, V> {
                     let node = Self::new_subtrie(key, value, leaf, pairs, op);
                     vec![AtomicPtr::new(Child::new_deep(node, &mut op.cas))]
                 };
-                let bmp = [0_u128; 2];
+                let bmp = u16::default();
                 Box::new(Node::Trie { bmp, childs })
             };
             node.hamming_set(w1);
             node
         } else {
             let child1 = AtomicPtr::new(Child::new_leaf_from(key, value, &mut op.cas));
-            let (bmp, childs) = ([0_u128; 2], vec![child1]);
+            let (bmp, childs) = (u16::default(), vec![child1]);
             let mut node = Node::Trie { bmp, childs };
             node.hamming_set(w1);
 
@@ -860,7 +852,7 @@ impl<K, V> Map<K, V> {
                 inode = match node {
                     Node::Trie { bmp, childs } => {
                         let hd = hamming_distance(w, bmp.clone());
-                        // println!("get loop bmp:{:x}-{:x} {:?}", bmp[1], bmp[0], hd);
+                        // println!("get loop bmp:{:x} {:?}", bmp, hd);
                         match hd {
                             Distance::Insert(_) => break 'retry None,
                             Distance::Set(n) => {
@@ -938,7 +930,7 @@ impl<K, V> Map<K, V> {
                 let n = match node {
                     Node::Trie { bmp, .. } => match hamming_distance(w, bmp.clone()) {
                         Distance::Insert(n) => {
-                            // println!("set loop bmp:{:x}-{:x} {}", bmp[1], bmp[0], n);
+                            // println!("set loop bmp:{:x} {}", bmp, n);
                             let cas = self.generate_cas();
                             let op = CasOp { inode, old, cas };
 
@@ -1066,7 +1058,7 @@ impl<K, V> Map<K, V> {
             },
             Node::List { .. } => unreachable!(),
         };
-        // println!("do_remove n:{} bmp:{:x}-{:x}", n, _bmp[1], _bmp[0]);
+        // println!("do_remove n:{} bmp:{:x}", n, _bmp);
 
         let old_child_ptr = childs[n].load(SeqCst);
         match unsafe { old_child_ptr.as_ref().unwrap() } {
@@ -1115,15 +1107,13 @@ enum Distance {
     Insert(usize), // not found
 }
 
-fn hamming_distance(w: u8, bmp: [u128; 2]) -> Distance {
-    let prefix = if w < 128 { 0 } else { bmp[0].count_ones() };
-    let posn = 1_u128 << (w % 128);
-    let mask: u128 = !(posn - 1);
-    let bmp: u128 = if w < 128 { bmp[0] } else { bmp[1] };
+fn hamming_distance(w: u8, bmp: u16) -> Distance {
+    let posn = 1_u16 << w;
+    let mask: u16 = !(posn - 1);
 
     let (x, y) = ((bmp & mask), bmp);
     // TODO: optimize it with SSE or popcnt instructions, figure-out a way.
-    let dist = (prefix + (x ^ y).count_ones()) as usize;
+    let dist = (x ^ y).count_ones() as usize;
 
     match bmp & posn {
         0 => Distance::Insert(dist),
@@ -1137,14 +1127,15 @@ fn key_to_hashbits<Q>(key: &Q) -> Vec<u8>
 where
     Q: Hash + ?Sized,
 {
-    use fasthash::city;
+    use fasthash::city::crc;
 
-    let mut hasher = city::Hasher64::default();
+    let mut hasher = crc::Hasher128::default();
     key.hash(&mut hasher);
     let code: u64 = hasher.finish();
+    let code: u32 = (((code >> 32) ^ code) & 0xFFFFFFFF) as u32;
 
     (0..8)
-        .map(|i| ((code >> (i * 8)) & SLOT_MASK) as u8)
+        .map(|i| ((code >> (i * 4)) & SLOT_MASK) as u8)
         .collect()
 }
 

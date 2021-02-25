@@ -10,7 +10,7 @@ use std::{
 
 use super::*;
 
-type Ky = u32;
+type Ky = u16;
 
 #[test]
 fn test_list_operation() {
@@ -73,10 +73,7 @@ fn test_list_operation() {
 
 #[test]
 fn test_hamming_distance() {
-    let bmp = [
-        0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
-        0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
-    ];
+    let bmp = 0xaaaa;
     for w in 0..=255 {
         let o = ((w % 128) / 2) as usize;
         let dist = hamming_distance(w, bmp.clone());
@@ -89,10 +86,7 @@ fn test_hamming_distance() {
         }
     }
 
-    let bmp = [
-        0x55555555555555555555555555555555,
-        0x55555555555555555555555555555555,
-    ];
+    let bmp = 0x5555;
     for w in 0..=255 {
         let o = ((w % 128) / 2) as usize;
         let dist = hamming_distance(w, bmp.clone());
@@ -155,7 +149,7 @@ fn with_btreemap(
 ) -> BTreeMap<Ky, u64> {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let mut counts = [0_usize; 3];
+    let mut counts = [[0_usize; 2]; 3];
 
     for _i in 0..n_ops {
         let bytes = rng.gen::<[u8; 32]>();
@@ -168,37 +162,42 @@ fn with_btreemap(
             Op::Set(key, value) => {
                 // map.print();
 
-                counts[0] += 1;
-
                 let map_val = map.set(key, value).unwrap();
                 let btmap_val = btmap.insert(key, value);
                 if map_val != btmap_val {
                     map.print();
                 }
+                counts[0][0] += 1;
+                counts[0][1] += if map_val.is_none() { 0 } else { 1 };
+
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Remove(key) => {
                 // map.print();
-
-                counts[1] += 1;
 
                 let map_val = map.remove(&key);
                 let btmap_val = btmap.remove(&key);
                 if map_val != btmap_val {
                     map.print();
                 }
+
+                counts[1][0] += 1;
+                counts[1][1] += if map_val.is_none() { 0 } else { 1 };
+
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Get(key) => {
                 // map.print();
-
-                counts[2] += 1;
 
                 let map_val = map.get(&key);
                 let btmap_val = btmap.get(&key).cloned();
                 if map_val != btmap_val {
                     map.print();
                 }
+
+                counts[2][0] += 1;
+                counts[2][1] += if map_val.is_none() { 0 } else { 1 };
+
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
         };

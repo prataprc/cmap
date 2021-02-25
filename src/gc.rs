@@ -65,9 +65,16 @@ impl<'a, K, V> Cas<'a, K, V> {
             self.tx.send(Reclaim { epoch, items }).ok(); // TODO: handle result
             true
         } else {
-            let epoch = None;
-            let items = OwnedMem::new_vec(self.fail);
-            self.tx.send(Reclaim { epoch, items }).ok(); // TODO: handle result
+            for item in self.fail.into_iter() {
+                match item {
+                    Mem::Child(ptr) => {
+                        let _child = unsafe { Box::from_raw(ptr) };
+                    }
+                    Mem::Node(ptr) => {
+                        let _node = unsafe { Box::from_raw(ptr) };
+                    }
+                }
+            }
             false
         }
     }
