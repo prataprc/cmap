@@ -3,11 +3,12 @@ use std::{
     fmt::Debug,
     hash::{Hash, Hasher},
     mem,
+    ops::Deref,
     sync::{
         atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
         mpsc, Arc, RwLock,
     },
-    thread, time,
+    thread,
 };
 
 use crate::{
@@ -29,18 +30,21 @@ macro_rules! print_ws {
 }
 
 // TODO: validate() method
-//       * make sure that Node::List are only at the 8th level.
-//       * make sure that there are no Node::Trie with empty childs.
-// TODO: introspect() method
+//   * make sure that Node::List are only at the last level.
+//   * make sure that there are no, non-root, Node::Trie with empty childs.
+// TODO: stats() method
+//   * Count the number of In{}, Node{} and Child{}
+//   * Count the number of Tomb nodes.
+//   * Count the number of Nodes that are tombable.
 
 pub struct Map<K, V> {
     id: usize,
-    root: Arc<AtomicPtr<In<K, V>>>,
+    root: Arc<Root<K, V>>,
 
     epoch: Arc<AtomicU64>,
     access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
 
-    handle: Arc<Option<thread::JoinHandle<()>>>,
+    handle: Option<thread::JoinHandle<()>>,
     tx: Option<mpsc::Sender<Reclaim<K, V>>>,
 }
 
@@ -70,6 +74,25 @@ pub enum Child<K, V> {
 pub struct Item<K, V> {
     key: K,
     value: V,
+}
+
+pub struct Root<K, V> {
+    root: AtomicPtr<In<K, V>>,
+}
+
+impl<K, V> Deref for Root<K, V> {
+    type Target = AtomicPtr<In<K, V>>;
+
+    fn deref(&self) -> &AtomicPtr<In<K, V>> {
+        &self.root
+    }
+}
+
+impl<K, V> Drop for Root<K, V> {
+    fn drop(&mut self) {
+        let inode = unsafe { Box::from_raw(self.root.load(SeqCst)) };
+        Node::free(inode.node.load(SeqCst));
+    }
 }
 
 impl<K, V> From<(K, V)> for Item<K, V> {
@@ -105,21 +128,9 @@ impl<K, V> Drop for Map<K, V> {
             let access_log = self.access_log.write().expect("lock-panic");
             access_log[self.id].store(0, SeqCst);
         }
-        mem::drop(self.tx.take());
 
-        if self.id == 0 {
-            loop {
-                match Arc::get_mut(&mut self.handle).take() {
-                    Some(handle) => {
-                        handle.take().unwrap().join().ok(); // TODO handle error
-                        break;
-                    }
-                    None => thread::sleep(time::Duration::from_millis(10)),
-                }
-            }
-            let inode = unsafe { Box::from_raw(self.root.load(SeqCst)) };
-            Node::free(inode.node.load(SeqCst));
-        }
+        mem::drop(self.tx.take());
+        self.handle.take().unwrap().join().ok(); // TODO handle error
     }
 }
 
@@ -137,7 +148,9 @@ where
             let inode = Box::new(In {
                 node: AtomicPtr::new(Box::leak(node)),
             });
-            Arc::new(AtomicPtr::new(Box::leak(inode)))
+            Arc::new(Root {
+                root: AtomicPtr::new(Box::leak(inode)),
+            })
         };
 
         let epoch = Arc::new(AtomicU64::new(1));
@@ -156,7 +169,7 @@ where
             epoch,
             access_log,
 
-            handle: Arc::new(Some(handle)),
+            handle: Some(handle),
             tx: Some(tx),
         }
     }
@@ -167,6 +180,11 @@ where
             access_log.push(Arc::new(AtomicU64::new(1)));
             access_log.len().saturating_sub(1)
         };
+        let (tx, rx) = mpsc::channel();
+        let handle = {
+            let args = (Arc::clone(&self.epoch), Arc::clone(&self.access_log));
+            thread::spawn(move || gc_thread(args.0, args.1, rx))
+        };
         Map {
             id,
             root: Arc::clone(&self.root),
@@ -174,8 +192,8 @@ where
             epoch: Arc::clone(&self.epoch),
             access_log: Arc::clone(&self.access_log),
 
-            handle: Arc::clone(&self.handle),
-            tx: self.tx.clone(),
+            handle: Some(handle),
+            tx: Some(tx),
         }
     }
 

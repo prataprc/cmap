@@ -9,7 +9,7 @@ use std::{
 
 use crate::{map::Child, map::Node};
 
-const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(100);
+const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(10);
 const ENTER_MASK: u64 = 0x8000000000000000;
 const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
 
@@ -164,23 +164,18 @@ pub fn gc_thread<K, V>(
         }
         objs = new_objs;
 
-        println!(
-            "garbage collected epoch:{} exited:{} {}/{}",
-            gc,
-            exited,
-            _n,
-            objs.len()
-        );
+        //#[cfg(test)] // TODO make it debug feature
+        //println!("garbage collected epoch:{} {}/{}", gc, _n, objs.len());
     }
 
+    #[cfg(test)]
     println!("exiting with pending allocs {}", objs.len());
     mem::drop(objs);
 }
 
 fn receive_blocks<K, V>(rx: &mpsc::Receiver<Reclaim<K, V>>) -> (Vec<Reclaim<K, V>>, bool) {
     let mut objs = vec![];
-    // TODO: no magic number
-    while objs.len() < 1_000_000_000 {
+    loop {
         match rx.try_recv() {
             Ok(recl) => objs.push(recl),
             Err(mpsc::TryRecvError::Empty) => return (objs, false),
@@ -191,5 +186,4 @@ fn receive_blocks<K, V>(rx: &mpsc::Receiver<Reclaim<K, V>>) -> (Vec<Reclaim<K, V
             }
         }
     }
-    (objs, false)
 }

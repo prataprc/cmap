@@ -10,7 +10,7 @@ use std::{
 
 use super::*;
 
-type Ky = u16;
+type Ky = u32;
 
 #[test]
 fn test_list_operation() {
@@ -128,19 +128,20 @@ fn test_map() {
         handles.push(h);
     }
 
-    let mut btmaps = vec![];
+    let mut btmap = BTreeMap::new();
     for handle in handles.into_iter() {
-        btmaps.push(handle.join().unwrap());
+        btmap = merge_btmap([btmap, handle.join().unwrap()]);
     }
 
-    //assert_eq!(map.len(), btmaps[0].len());
+    println!("len {}", map.len());
+    assert_eq!(map.len(), btmap.len());
 
-    //for (key, val) in btmaps[0].iter() {
-    //    assert_eq!(map.get(key), Some(val.clone()));
-    //}
+    for (key, val) in btmap.iter() {
+        assert_eq!(map.get(key), Some(val.clone()));
+    }
+
     mem::drop(map);
-    mem::drop(btmaps);
-    loop {}
+    mem::drop(btmap);
 }
 
 fn with_btreemap(
@@ -194,7 +195,6 @@ fn with_btreemap(
 
                 let map_val = map.get(&key);
                 let btmap_val = btmap.get(&key).cloned();
-                // println!("{:?} {:?}", map_val, btmap_val);
                 if map_val != btmap_val {
                     map.print();
                 }
@@ -237,4 +237,13 @@ where
             }
         }
     }
+}
+
+fn merge_btmap(items: [BTreeMap<Ky, u64>; 2]) -> BTreeMap<Ky, u64> {
+    let [mut one, two] = items;
+
+    for (key, value) in two.iter() {
+        one.insert(*key, *value);
+    }
+    one
 }
