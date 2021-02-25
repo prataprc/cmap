@@ -33,15 +33,15 @@ impl Drop for Epoch {
     }
 }
 
-pub struct Cas<'a, K, V> {
+pub struct Cas<'a, V> {
     epoch: &'a Arc<AtomicU64>,
-    tx: &'a mpsc::Sender<Reclaim<K, V>>,
-    pass: Vec<Mem<K, V>>,
-    fail: Vec<Mem<K, V>>,
+    tx: &'a mpsc::Sender<Reclaim<V>>,
+    pass: Vec<Mem<V>>,
+    fail: Vec<Mem<V>>,
 }
 
-impl<'a, K, V> Cas<'a, K, V> {
-    pub fn new(tx: &'a mpsc::Sender<Reclaim<K, V>>, epoch: &'a Arc<AtomicU64>) -> Self {
+impl<'a, V> Cas<'a, V> {
+    pub fn new(tx: &'a mpsc::Sender<Reclaim<V>>, epoch: &'a Arc<AtomicU64>) -> Self {
         Cas {
             epoch,
             tx,
@@ -50,11 +50,11 @@ impl<'a, K, V> Cas<'a, K, V> {
         }
     }
 
-    pub fn free_on_pass(&mut self, m: Mem<K, V>) {
+    pub fn free_on_pass(&mut self, m: Mem<V>) {
         self.pass.push(m)
     }
 
-    pub fn free_on_fail(&mut self, m: Mem<K, V>) {
+    pub fn free_on_fail(&mut self, m: Mem<V>) {
         self.fail.push(m)
     }
 
@@ -80,23 +80,23 @@ impl<'a, K, V> Cas<'a, K, V> {
     }
 }
 
-pub enum Mem<K, V> {
-    Child(*mut Child<K, V>),
-    Node(*mut Node<K, V>),
+pub enum Mem<V> {
+    Child(*mut Child<V>),
+    Node(*mut Node<V>),
 }
 
-pub struct Reclaim<K, V> {
+pub struct Reclaim<V> {
     epoch: Option<u64>,
-    items: Vec<OwnedMem<K, V>>,
+    items: Vec<OwnedMem<V>>,
 }
 
-enum OwnedMem<K, V> {
-    Child(Box<Child<K, V>>),
-    Node(Box<Node<K, V>>),
+enum OwnedMem<V> {
+    Child(Box<Child<V>>),
+    Node(Box<Node<V>>),
 }
 
-impl<K, V> OwnedMem<K, V> {
-    fn new_vec(mems: Vec<Mem<K, V>>) -> Vec<Self> {
+impl<V> OwnedMem<V> {
+    fn new_vec(mems: Vec<Mem<V>>) -> Vec<Self> {
         mems.into_iter()
             .map(|m| match m {
                 Mem::Child(ptr) => unsafe { OwnedMem::Child(Box::from_raw(ptr)) },
@@ -106,10 +106,10 @@ impl<K, V> OwnedMem<K, V> {
     }
 }
 
-pub fn gc_thread<K, V>(
+pub fn gc_thread<V>(
     epoch: Arc<AtomicU64>,
     access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
-    rx: mpsc::Receiver<Reclaim<K, V>>,
+    rx: mpsc::Receiver<Reclaim<V>>,
 ) {
     let mut objs = vec![];
 
@@ -171,7 +171,7 @@ pub fn gc_thread<K, V>(
     mem::drop(objs);
 }
 
-fn receive_blocks<K, V>(rx: &mpsc::Receiver<Reclaim<K, V>>) -> (Vec<Reclaim<K, V>>, bool) {
+fn receive_blocks<V>(rx: &mpsc::Receiver<Reclaim<V>>) -> (Vec<Reclaim<V>>, bool) {
     let mut objs = vec![];
     loop {
         match rx.try_recv() {

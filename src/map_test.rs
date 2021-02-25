@@ -1,71 +1,61 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 
-use std::{
-    collections::BTreeMap,
-    mem,
-    ops::{Add, Div, Mul, Rem},
-    thread,
-};
+use std::{collections::BTreeMap, mem, thread};
 
 use super::*;
 
-type Ky = u16;
-
 #[test]
 fn test_list_operation() {
-    let mut items = vec![
+    let mut items: Vec<Item<u64>> = vec![
         Item {
-            key: 20_u64,
-            value: 200_u64,
+            key: 20,
+            value: 200,
         },
         Item {
-            key: 10_u64,
-            value: 100_u64,
+            key: 10,
+            value: 100,
         },
         Item {
-            key: 50_u64,
-            value: 500_u64,
+            key: 50,
+            value: 500,
         },
         Item {
-            key: 30_u64,
-            value: 300_u64,
+            key: 30,
+            value: 300,
         },
     ];
 
-    assert_eq!(update_into_list(&10_u64, &1000_u64, &mut items), Some(100));
-    assert_eq!(
-        update_into_list(&10_u64, &10000_u64, &mut items),
-        Some(1000)
-    );
-    assert_eq!(update_into_list(&60_u64, &600_u64, &mut items), None);
+    assert_eq!(update_into_list(10, &1000, &mut items), Some(100));
+    assert_eq!(update_into_list(10, &10000, &mut items), Some(1000));
+    assert_eq!(update_into_list(60, &600, &mut items), None);
 
-    let (items, item) = remove_from_list(&20_u64, &items).unwrap();
-    assert_eq!(item, 200_u64);
-    let (items, item) = remove_from_list(&60_u64, &items).unwrap();
-    assert_eq!(item, 600_u64);
-    assert_eq!(remove_from_list(&20_u64, &items), None);
-    assert_eq!(remove_from_list(&60_u64, &items), None);
+    let (items, item) = remove_from_list(20, &items).unwrap();
+    assert_eq!(item, 200);
+    let (items, item) = remove_from_list(60, &items).unwrap();
+    assert_eq!(item, 600);
+    assert_eq!(remove_from_list(20, &items), None);
+    assert_eq!(remove_from_list(60, &items), None);
 
-    assert_eq!(get_from_list(&10, &items), Some(10000_u64));
-    assert_eq!(get_from_list(&50, &items), Some(500_u64));
-    assert_eq!(get_from_list(&30, &items), Some(300_u64));
-    assert_eq!(get_from_list(&20, &items), None);
+    assert_eq!(get_from_list(10, &items), Some(10000));
+    assert_eq!(get_from_list(50, &items), Some(500));
+    assert_eq!(get_from_list(30, &items), Some(300));
+    assert_eq!(get_from_list(20, &items), None);
 
     assert_eq!(
         items,
         vec![
             Item {
-                key: 10_u64,
-                value: 10000_u64,
+                key: 10,
+                value: 10000,
             },
             Item {
-                key: 50_u64,
-                value: 500_u64,
+                key: 50,
+                value: 500,
             },
             Item {
-                key: 30_u64,
-                value: 300_u64,
+                key: 30,
+                value: 300,
             },
         ]
     );
@@ -108,15 +98,16 @@ fn test_map() {
 
     let n_ops = 2_000_000; // TODO
     let n_threads = 8; // TODO
-    let modul = Ky::MAX / n_threads;
+    let modul = u32::MAX / n_threads;
+    // let modul = 65536 / n_threads;
 
-    let map: Map<Ky, u64> = Map::new();
+    let map: Map<u64> = Map::new();
     let mut handles = vec![];
     for id in 0..n_threads {
         let seed = seed + ((id as u128) * 100);
 
         let map = map.cloned();
-        let btmap: BTreeMap<Ky, u64> = BTreeMap::new();
+        let btmap: BTreeMap<u32, u64> = BTreeMap::new();
         let h = thread::spawn(move || with_btreemap(id, seed, modul, n_ops, map, btmap));
 
         handles.push(h);
@@ -127,26 +118,25 @@ fn test_map() {
         btmap = merge_btmap([btmap, handle.join().unwrap()]);
     }
 
-    // TODO
-    //println!("len {}", map.len());
-    //assert_eq!(map.len(), btmap.len());
+    println!("len {}", map.len());
+    assert_eq!(map.len(), btmap.len());
 
-    //for (key, val) in btmap.iter() {
-    //    assert_eq!(map.get(key), Some(val.clone()));
-    //}
+    for (key, val) in btmap.iter() {
+        assert_eq!(map.get(*key), Some(val.clone()));
+    }
 
     mem::drop(map);
     mem::drop(btmap);
 }
 
 fn with_btreemap(
-    id: Ky,
+    id: u32,
     seed: u128,
-    modul: Ky,
+    modul: u32,
     n_ops: usize,
-    map: Map<Ky, u64>,
-    mut btmap: BTreeMap<Ky, u64>,
-) -> BTreeMap<Ky, u64> {
+    map: Map<u64>,
+    mut btmap: BTreeMap<u32, u64>,
+) -> BTreeMap<u32, u64> {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let mut counts = [[0_usize; 2]; 3];
@@ -155,8 +145,8 @@ fn with_btreemap(
         let bytes = rng.gen::<[u8; 32]>();
         let mut uns = Unstructured::new(&bytes);
 
-        let mut op: Op<Ky, u64> = uns.arbitrary().unwrap();
-        op = op.adjust_key(id, modul, 1);
+        let mut op: Op<u64> = uns.arbitrary().unwrap();
+        op = op.adjust_key(id, modul);
         // println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
@@ -175,7 +165,7 @@ fn with_btreemap(
             Op::Remove(key) => {
                 // map.print();
 
-                let map_val = map.remove(&key);
+                let map_val = map.remove(key);
                 let btmap_val = btmap.remove(&key);
                 if map_val != btmap_val {
                     map.print();
@@ -189,7 +179,7 @@ fn with_btreemap(
             Op::Get(key) => {
                 // map.print();
 
-                let map_val = map.get(&key);
+                let map_val = map.get(key);
                 let btmap_val = btmap.get(&key).cloned();
                 if map_val != btmap_val {
                     map.print();
@@ -208,30 +198,24 @@ fn with_btreemap(
 }
 
 #[derive(Clone, Debug, Arbitrary)]
-enum Op<K, V> {
-    Get(K),
-    Set(K, V),
-    Remove(K),
+enum Op<V> {
+    Get(u32),
+    Set(u32, V),
+    Remove(u32),
 }
 
-impl<K, V> Op<K, V>
-where
-    K: Copy + Mul<Output = K> + Rem<Output = K> + Add<Output = K> + Div<Output = K>,
-{
-    fn adjust_key(self, id: K, modul: K, div: K) -> Self {
+impl<V> Op<V> {
+    fn adjust_key(self, id: u32, modul: u32) -> Self {
         match self {
             Op::Get(key) => {
-                let key = key / div;
                 let key = (id * modul) + (key % modul);
                 Op::Get((id * modul) + (key % modul))
             }
             Op::Set(key, value) => {
-                let key = key / div;
                 let key = (id * modul) + (key % modul);
                 Op::Set(key, value)
             }
             Op::Remove(key) => {
-                let key = key / div;
                 let key = (id * modul) + (key % modul);
                 Op::Remove(key)
             }
@@ -239,7 +223,7 @@ where
     }
 }
 
-fn merge_btmap(items: [BTreeMap<Ky, u64>; 2]) -> BTreeMap<Ky, u64> {
+fn merge_btmap(items: [BTreeMap<u32, u64>; 2]) -> BTreeMap<u32, u64> {
     let [mut one, two] = items;
 
     for (key, value) in two.iter() {
