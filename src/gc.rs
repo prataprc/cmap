@@ -58,14 +58,16 @@ impl<'a, K, V> Cas<'a, K, V> {
         self.fail.push(m)
     }
 
-    pub fn swing<T>(&mut self, loc: &AtomicPtr<T>, old: *mut T, new: *mut T) -> bool {
+    pub fn swing<T>(self, loc: &AtomicPtr<T>, old: *mut T, new: *mut T) -> bool {
         if loc.compare_and_swap(old, new, SeqCst) == old {
-            let epoch = self.epoch.load(SeqCst);
-            let tx = &self.tx;
-            self.pass.drain(..).for_each(|mem| mem.pass(epoch, tx));
+            let epoch = Some(self.epoch.load(SeqCst));
+            let items = OwnedMem::new_vec(self.pass);
+            self.tx.send(Reclaim { epoch, items }).ok(); // TODO: handle result
             true
         } else {
-            self.fail.drain(..).for_each(|mem| mem.fail());
+            let epoch = None;
+            let items = OwnedMem::new_vec(self.fail);
+            self.tx.send(Reclaim { epoch, items }).ok(); // TODO: handle result
             false
         }
     }
@@ -76,35 +78,25 @@ pub enum Mem<K, V> {
     Node(*mut Node<K, V>),
 }
 
-impl<K, V> Mem<K, V> {
-    fn pass(self, epoch: u64, tx: &mpsc::Sender<Reclaim<K, V>>) {
-        match self {
-            Mem::Child(ptr) => {
-                let child = unsafe { Box::from_raw(ptr) };
-                tx.send(Reclaim::Child { epoch, child }).expect("ipc-fail");
-            }
-            Mem::Node(ptr) => {
-                let node = unsafe { Box::from_raw(ptr) };
-                tx.send(Reclaim::Node { epoch, node }).expect("ipc-fail");
-            }
-        }
-    }
-
-    fn fail(self) {
-        match self {
-            Mem::Child(ptr) => {
-                let _child = unsafe { Box::from_raw(ptr) };
-            }
-            Mem::Node(ptr) => {
-                let _node = unsafe { Box::from_raw(ptr) };
-            }
-        }
-    }
+pub struct Reclaim<K, V> {
+    epoch: Option<u64>,
+    items: Vec<OwnedMem<K, V>>,
 }
 
-pub enum Reclaim<K, V> {
-    Child { epoch: u64, child: Box<Child<K, V>> },
-    Node { epoch: u64, node: Box<Node<K, V>> },
+enum OwnedMem<K, V> {
+    Child(Box<Child<K, V>>),
+    Node(Box<Node<K, V>>),
+}
+
+impl<K, V> OwnedMem<K, V> {
+    fn new_vec(mems: Vec<Mem<K, V>>) -> Vec<Self> {
+        mems.into_iter()
+            .map(|m| match m {
+                Mem::Child(ptr) => unsafe { OwnedMem::Child(Box::from_raw(ptr)) },
+                Mem::Node(ptr) => unsafe { OwnedMem::Node(Box::from_raw(ptr)) },
+            })
+            .collect()
+    }
 }
 
 pub fn gc_thread<K, V>(
@@ -156,10 +148,9 @@ pub fn gc_thread<K, V>(
 
         let mut new_objs = vec![];
         for obj in objs.into_iter() {
-            match obj {
-                Reclaim::Child { epoch, .. } if epoch < gc => (),
-                Reclaim::Node { epoch, .. } if epoch < gc => (),
-                _ => new_objs.push(obj),
+            match obj.epoch {
+                Some(epoch) if epoch < gc => mem::drop(obj.items),
+                Some(_) | None => new_objs.push(obj),
             }
         }
         objs = new_objs;
