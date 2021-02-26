@@ -124,7 +124,7 @@ impl<V> Cas<V> {
                 None => {
                     self.n_allocs += 1;
                     Box::new(Node::List {
-                        items: Vec::with_capacity(1),
+                        items: Vec::with_capacity(2), // **IMPORTANT**
                     })
                 }
             },
