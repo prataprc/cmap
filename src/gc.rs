@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::{map::Child, map::Node};
+use crate::{map::Child, map::Item, map::Node};
 
 // pub const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(10);
 pub const ENTER_MASK: u64 = 0x8000000000000000;
@@ -31,12 +31,14 @@ impl Drop for Epoch {
 }
 
 pub struct Cas<V> {
-    blocks: Vec<Box<Reclaim<V>>>,
-    pass: Vec<OwnedMem<V>>,
-    fail: Vec<OwnedMem<V>>,
+    reclaims: Vec<Box<Reclaim<V>>>,
+    older: Vec<OwnedMem<V>>,
+    newer: Vec<OwnedMem<V>>,
 
     child_pool: Vec<Box<Child<V>>>,
-    node_pool: Vec<Box<Node<V>>>,
+    node_tomb_pool: Vec<Box<Node<V>>>,
+    node_list_pool: Vec<Box<Node<V>>>,
+    node_trie_pool: Vec<Box<Node<V>>>,
     reclaim_pool: Vec<Box<Reclaim<V>>>,
 
     n_allocs: usize,
@@ -46,22 +48,24 @@ pub struct Cas<V> {
 impl<V> Drop for Cas<V> {
     fn drop(&mut self) {
         assert!(
-            self.pass.len() == 0,
-            "invariant Cas::pass should be ZERO on drop"
+            self.older.len() == 0,
+            "invariant Cas::older should be ZERO on drop"
         );
         assert!(
-            self.fail.len() == 0,
-            "invariant Cas::fail should be ZERO on drop"
+            self.newer.len() == 0,
+            "invariant Cas::newer should be ZERO on drop"
         );
         assert!(
-            self.blocks.len() == 0,
-            "invariant Cas::blocks should be ZERO on drop"
+            self.reclaims.len() == 0,
+            "invariant Cas::reclaims should be ZERO on drop"
         );
         #[cfg(test)]
         println!(
-            "cas pools:{},{},{} allocs:{}/{}",
+            "cas pools:{},({},{},{}),{} allocs:{}/{}",
             self.child_pool.len(),
-            self.node_pool.len(),
+            self.node_trie_pool.len(),
+            self.node_list_pool.len(),
+            self.node_item_pool.len(),
             self.reclaim_pool.len(),
             self.n_allocs,
             self.n_frees
@@ -72,30 +76,32 @@ impl<V> Drop for Cas<V> {
 impl<V> Cas<V> {
     pub fn new() -> Self {
         Cas {
-            blocks: Vec::default(),
-            pass: Vec::default(),
-            fail: Vec::default(),
+            reclaims: Vec::with_capacity(64),
+            older: Vec::with_capacity(64),
+            newer: Vec::with_capacity(64),
 
-            child_pool: Vec::default(),
-            node_pool: Vec::default(),
-            reclaim_pool: Vec::default(),
+            child_pool: Vec::with_capacity(64),
+            node_trie_pool: Vec::with_capacity(64),
+            node_list_pool: Vec::with_capacity(64),
+            node_tomb_pool: Vec::with_capacity(64),
+            reclaim_pool: Vec::with_capacity(64),
 
             n_allocs: 0,
             n_frees: 0,
         }
     }
 
-    pub fn has_blocks(&self) -> bool {
-        self.blocks.len() > 0
+    pub fn has_reclaims(&self) -> bool {
+        self.reclaims.len() > 0
     }
 
     pub fn free_on_pass(&mut self, m: Mem<V>) {
         match m {
             Mem::Child(ptr) => unsafe {
-                self.pass.push(OwnedMem::Child(Box::from_raw(ptr)));
+                self.older.push(OwnedMem::Child(Box::from_raw(ptr)));
             },
             Mem::Node(ptr) => unsafe {
-                self.pass.push(OwnedMem::Node(Box::from_raw(ptr)));
+                self.older.push(OwnedMem::Node(Box::from_raw(ptr)));
             },
         }
     }
@@ -103,28 +109,49 @@ impl<V> Cas<V> {
     pub fn free_on_fail(&mut self, m: Mem<V>) {
         match m {
             Mem::Child(ptr) => unsafe {
-                self.fail.push(OwnedMem::Child(Box::from_raw(ptr)));
+                self.newer.push(OwnedMem::Child(Box::from_raw(ptr)));
             },
             Mem::Node(ptr) => unsafe {
-                self.fail.push(OwnedMem::Node(Box::from_raw(ptr)));
+                self.newer.push(OwnedMem::Node(Box::from_raw(ptr)));
             },
         }
     }
 
-    pub fn alloc_node(&mut self) -> Box<Node<V>> {
-        match self.node_pool.pop() {
-            Some(val) => val,
-            None => {
-                self.n_allocs += 1;
-                Box::new(Node::default())
-            }
+    pub fn alloc_node(&mut self, variant: char) -> Box<Node<V>> {
+        match variant {
+            'l' => match self.node_list_pool.pop() {
+                Some(val) => val,
+                None => {
+                    self.n_allocs += 1;
+                    Box::new(Node::List {
+                        items: Vec::with_capacity(1),
+                    })
+                }
+            },
+            't' => match self.node_trie_pool.pop() {
+                Some(val) => val,
+                None => {
+                    self.n_allocs += 1;
+                    Box::new(Node::Trie {
+                        bmp: 0,
+                        childs: Vec::with_capacity(1),
+                    })
+                }
+            },
+            'b' => match self.node_tomb_pool.pop() {
+                Some(val) => val,
+                None => {
+                    self.n_allocs += 1;
+                    Box::new(Node::Tomb {
+                        item: Item::default(),
+                    })
+                }
+            },
+            _ => unreachable!(),
         }
     }
 
-    pub fn alloc_child(&mut self) -> Box<Child<V>>
-    where
-        V: Default,
-    {
+    pub fn alloc_child(&mut self) -> Box<Child<V>> {
         match self.child_pool.pop() {
             Some(val) => val,
             None => {
@@ -144,27 +171,39 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn free_node(&mut self, node: Box<Node<V>>) {
-        if self.node_pool.len() >= MAX_POOL_SIZE {
-            self.n_frees += 1
+    pub fn free_node(&mut self, mut node: Box<Node<V>>) {
+        let pool = match node.as_mut() {
+            Node::Trie { bmp, childs } => {
+                *bmp = 0;
+                childs.clear();
+                &mut self.node_trie_pool
+            }
+            Node::List { items } => {
+                items.clear();
+                &mut self.node_list_pool
+            }
+            Node::Tomb { .. } => &mut self.node_tomb_pool,
+        };
+        if pool.len() < MAX_POOL_SIZE {
+            pool.push(node)
         } else {
-            self.node_pool.push(node)
+            self.n_frees += 1
         }
     }
 
     pub fn free_child(&mut self, child: Box<Child<V>>) {
-        if self.child_pool.len() >= MAX_POOL_SIZE {
-            self.n_frees += 1
-        } else {
+        if self.child_pool.len() < MAX_POOL_SIZE {
             self.child_pool.push(child)
+        } else {
+            self.n_frees += 1
         }
     }
 
     pub fn free_reclaim(&mut self, reclaim: Box<Reclaim<V>>) {
-        if self.reclaim_pool.len() >= MAX_POOL_SIZE {
-            self.n_frees += 1
-        } else {
+        if self.reclaim_pool.len() < MAX_POOL_SIZE {
             self.reclaim_pool.push(reclaim)
+        } else {
+            self.n_frees += 1
         }
     }
 
@@ -183,16 +222,15 @@ impl<V> Cas<V> {
                 let mut r = self.alloc_reclaim();
                 r.epoch = Some(epoch.load(SeqCst));
                 r.items.clear();
-                r.items.extend(self.pass.drain(..));
-                self.pass.clear();
+                r.items.extend(self.older.drain(..)); // TODO: can we do memcpy ?
                 r
             };
-            self.blocks.push(r);
-            self.fail.drain(..).for_each(|m| m.leak());
+            self.reclaims.push(r);
+            self.newer.drain(..).for_each(|m| m.leak());
             true
         } else {
-            self.pass.drain(..).for_each(|om| om.leak());
-            while let Some(om) = self.fail.pop() {
+            self.older.drain(..).for_each(|om| om.leak());
+            while let Some(om) = self.newer.pop() {
                 match om {
                     OwnedMem::Child(val) => self.free_child(val),
                     OwnedMem::Node(val) => self.free_node(val),
@@ -204,11 +242,11 @@ impl<V> Cas<V> {
     }
 
     pub fn garbage_collect(&mut self, gc_epoch: u64) {
-        let n = self.blocks.len();
+        let n = self.reclaims.len();
         for i in (0..n).rev() {
-            match self.blocks[i].epoch {
+            match self.reclaims[i].epoch {
                 Some(epoch) if epoch < gc_epoch => {
-                    let mut r = self.blocks.remove(i);
+                    let mut r = self.reclaims.remove(i);
                     while let Some(om) = r.items.pop() {
                         match om {
                             OwnedMem::Child(val) => self.free_child(val),
@@ -216,6 +254,7 @@ impl<V> Cas<V> {
                             OwnedMem::None => (),
                         }
                     }
+                    r.epoch = None;
                     self.free_reclaim(r);
                 }
                 Some(_) | None => (),
