@@ -96,12 +96,12 @@ fn test_map() {
     let seed: u128 = 108608880608704922882102056739567863183;
     println!("test_map seed {}", seed);
 
-    let n_ops = 2_000_000; // TODO
-    let n_threads = 8; // TODO
-    let modul = u32::MAX / n_threads;
-    // let modul = 65536 / n_threads;
+    let n_ops = 2000; // TODO
+    let n_threads = 1; // TODO
+    let modul = 16 / n_threads;
+    // let modul = u32::MAX / n_threads;
 
-    let map: Map<u64> = Map::new();
+    let mut map: Map<u64> = Map::new();
     let mut handles = vec![];
     for id in 0..n_threads {
         let seed = seed + ((id as u128) * 100);
@@ -125,6 +125,8 @@ fn test_map() {
         assert_eq!(map.get(*key), Some(val.clone()));
     }
 
+    // map.print();
+
     mem::drop(map);
     mem::drop(btmap);
 }
@@ -134,7 +136,7 @@ fn with_btreemap(
     seed: u128,
     modul: u32,
     n_ops: usize,
-    map: Map<u64>,
+    mut map: Map<u64>,
     mut btmap: BTreeMap<u32, u64>,
 ) -> BTreeMap<u32, u64> {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
@@ -152,7 +154,7 @@ fn with_btreemap(
             Op::Set(key, value) => {
                 // map.print();
 
-                let map_val = map.set(key, value).unwrap();
+                let map_val = map.set(key, value);
                 let btmap_val = btmap.insert(key, value);
                 if map_val != btmap_val {
                     map.print();
