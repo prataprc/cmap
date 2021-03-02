@@ -99,8 +99,8 @@ fn test_map() {
 
     let n_ops = 100_000; // TODO
     let n_threads = 8; // TODO
-    let modul = 16 / n_threads;
-    // let modul = u32::MAX / n_threads; // TODO
+                       // let modul = 100_000 / n_threads;
+    let modul = u32::MAX; // TODO
 
     let mut map: Map<u64> = Map::new();
     let mut handles = vec![];

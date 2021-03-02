@@ -4,7 +4,7 @@ use std::{
     ops::Deref,
     sync::{
         self,
-        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
+        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
         Arc, RwLock,
     },
     thread, time,
@@ -79,6 +79,8 @@ pub struct Map<V> {
     epoch: Arc<AtomicU64>,
     access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
     cas: gc::Cas<V>,
+    n_compacts: Arc<AtomicUsize>,
+    n_retries: Arc<AtomicUsize>,
 }
 
 pub struct In<V> {
@@ -220,6 +222,8 @@ where
             epoch: Arc::new(AtomicU64::new(1)),
             access_log,
             cas: gc::Cas::new(),
+            n_compacts: Arc::new(AtomicUsize::new(0)),
+            n_retries: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -236,6 +240,8 @@ where
             epoch: Arc::clone(&self.epoch),
             access_log: Arc::clone(&self.access_log),
             cas: gc::Cas::new(),
+            n_compacts: Arc::clone(&self.n_compacts),
+            n_retries: Arc::clone(&self.n_retries),
         }
     }
 
@@ -246,7 +252,12 @@ where
         let epoch = self.epoch.load(SeqCst);
         let guard = self.access_log.write().expect("lock-panic");
         let access_log = guard.iter().map(|e| e.load(SeqCst));
-        println!("Map<{},{:?}", epoch, access_log);
+        let n_compacts = self.n_compacts.load(SeqCst);
+        let n_retries = self.n_retries.load(SeqCst);
+        println!(
+            "Map<{},{:?},{},{}>",
+            epoch, access_log, n_compacts, n_retries
+        );
         unsafe { self.root.load(SeqCst).as_ref().unwrap().print("  ") };
     }
 }
@@ -259,7 +270,9 @@ impl<V> Map<V> {
                 Arc::clone(&access_log[self.id])
             };
             let epoch = Arc::clone(&self.epoch);
-            Epoch::new(epoch, at)
+            let n_compacts = Arc::clone(&self.n_compacts);
+            let n_retries = Arc::clone(&self.n_retries);
+            Epoch::new(epoch, at, n_compacts, n_retries)
         };
 
         epoch
@@ -848,9 +861,6 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
-        #[cfg(test)]
-        let key = key_to_hash32(&key);
-
         let epoch = self.epoch.load(SeqCst);
         let (gc_epoch, res) = {
             let (access_log, res) = self.do_get(key);
@@ -872,48 +882,45 @@ impl<V> Map<V> {
         let access_log = self.access_log.read().expect("fail-lock");
 
         let ws = slots(key);
-        let res = 'retry: loop {
-            let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
+        let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
+        let mut wss = &ws[..];
+        // print_ws!("get outer ws:{:?}", wss);
 
-            let mut wss = &ws[..];
-            // print_ws!("get outer ws:{:?}", wss);
+        let res = loop {
+            let old = inode.node.load(SeqCst);
+            let node = unsafe { old.as_ref().unwrap() };
 
-            loop {
-                let old = inode.node.load(SeqCst);
-                let node = unsafe { old.as_ref().unwrap() };
+            let w = match wss.first() {
+                Some(w) => *w,
+                None => break node.get_value(key),
+            };
+            wss = &wss[1..];
+            // println!("get loop w:{:x}", w);
 
-                let w = match wss.first() {
-                    Some(w) => *w,
-                    None => break 'retry node.get_value(key),
-                };
-                wss = &wss[1..];
-                // println!("get loop w:{:x}", w);
-
-                inode = match node {
-                    Node::Trie { bmp, childs } => {
-                        let hd = hamming_distance(w, bmp.clone());
-                        // println!("get loop bmp:{:x} {:?}", bmp, hd);
-                        match hd {
-                            Distance::Insert(_) => break 'retry None,
-                            Distance::Set(n) => {
-                                let ptr = childs[n].load(SeqCst);
-                                match unsafe { ptr.as_ref().unwrap() } {
-                                    Child::Deep(next_inode) => next_inode,
-                                    Child::Leaf(item) if item.key == key => {
-                                        let ov = item.value.as_ref().cloned().unwrap();
-                                        break 'retry Some(ov);
-                                    }
-                                    Child::Leaf(_) => break 'retry None,
+            inode = match node {
+                Node::Trie { bmp, childs } => {
+                    let hd = hamming_distance(w, bmp.clone());
+                    // println!("get loop bmp:{:x} {:?}", bmp, hd);
+                    match hd {
+                        Distance::Insert(_) => break None,
+                        Distance::Set(n) => {
+                            let ptr = childs[n].load(SeqCst);
+                            match unsafe { ptr.as_ref().unwrap() } {
+                                Child::Deep(next_inode) => next_inode,
+                                Child::Leaf(item) if item.key == key => {
+                                    let ov = item.value.as_ref().cloned().unwrap();
+                                    break Some(ov);
                                 }
+                                Child::Leaf(_) => break None,
                             }
                         }
                     }
-                    Node::List { .. } => unreachable!(),
-                    Node::Tomb { item } if item.key == key => {
-                        break 'retry Some(item.value.as_ref().cloned().unwrap())
-                    }
-                    Node::Tomb { .. } => break 'retry None,
                 }
+                Node::List { .. } => unreachable!(),
+                Node::Tomb { item } if item.key == key => {
+                    break Some(item.value.as_ref().cloned().unwrap())
+                }
+                Node::Tomb { .. } => break None,
             }
         };
         (access_log, res)
@@ -923,9 +930,6 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
-        #[cfg(test)]
-        let key = key_to_hash32(&key);
-
         let epoch = self.epoch.load(SeqCst);
         let (gc_epoch, res) = {
             let (access_log, res) = self.do_set(key, value);
@@ -941,11 +945,15 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
-        let _epoch = self.generate_epoch();
+        let epocher = self.generate_epoch();
         let access_log = self.access_log.read().expect("fail-lock");
 
+        let mut retries = 0;
         let ws = slots(key);
         let res = 'retry: loop {
+            retries += 1;
+            epocher.count_retries(retries);
+
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
 
             let mut wss = &ws[..];
@@ -1038,16 +1046,13 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
-        #[cfg(test)]
-        let key = key_to_hash32(&key);
-
         let epoch = self.epoch.load(SeqCst);
         let (gc_epoch, compact, res) = {
             let (access_log, compact, res) = self.do_remove(key);
             (gc_epoch!(access_log, epoch), compact, res)
         };
         if compact {
-            self.do_compact(key)
+            // self.do_compact(key)
         }
         if gc_epoch < u64::MAX {
             self.cas.garbage_collect(gc_epoch)
@@ -1059,15 +1064,19 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
-        let _epoch = self.generate_epoch();
+        let epocher = self.generate_epoch();
         let access_log = self.access_log.read().expect("fail-lock");
 
+        let mut retries = 0;
         let ws = slots(key);
         let (compact, res) = 'retry: loop {
+            retries += 1;
+            epocher.count_retries(retries);
+
             let mut inode: &In<V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
 
             let mut wss = &ws[..];
-            // print_ws!("remove try {:?}", wss);
+            // print_ws!("do_remove try {:?}", wss);
 
             loop {
                 let old: *mut Node<V> = inode.node.load(SeqCst);
@@ -1134,14 +1143,20 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
-        let _epoch = self.generate_epoch();
+        let epocher = self.generate_epoch();
         let _access_log = self.access_log.read().expect("fail-lock");
 
+        epocher.count_compacts();
+
+        let mut retries = 0;
         let ws = slots(key);
         'retry: loop {
+            retries += 1;
+            epocher.count_retries(retries);
+
             let mut inode: &In<V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
-            // print_ws!("compact try {:?}", wss);
+            //print_ws!("do_compact try {:?} retries:{}", wss);
 
             let mut depth = 0;
             loop {

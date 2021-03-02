@@ -1,7 +1,7 @@
 use std::{
     fmt, result,
     sync::{
-        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
+        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
         Arc,
     },
 };
@@ -18,12 +18,53 @@ pub const MAX_POOL_SIZE: usize = 1024;
 pub struct Epoch {
     epoch: Arc<AtomicU64>,
     at: Arc<AtomicU64>,
+    n_compacts: Arc<AtomicUsize>,
+    n_retries: Arc<AtomicUsize>,
 }
 
 impl Epoch {
-    pub fn new(epoch: Arc<AtomicU64>, at: Arc<AtomicU64>) -> Epoch {
+    pub fn new(
+        epoch: Arc<AtomicU64>,
+        at: Arc<AtomicU64>,
+        n_compacts: Arc<AtomicUsize>,
+        n_retries: Arc<AtomicUsize>,
+    ) -> Epoch {
         at.store(epoch.load(SeqCst) | ENTER_MASK, SeqCst);
-        Epoch { epoch, at }
+        Epoch {
+            epoch,
+            at,
+            n_compacts,
+            n_retries,
+        }
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub fn count_retries(&self, retries: usize) {
+        match retries {
+            0 | 1 => (),
+            _ => {
+                self.n_retries.fetch_add(1, SeqCst);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub fn count_compacts(&self) {
+        self.n_compacts.fetch_add(1, SeqCst);
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    pub fn count_retries(&self, _retries: usize) {
+        ()
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    pub fn count_compacts(&self) {
+        ()
     }
 }
 
@@ -65,7 +106,7 @@ impl<V> Drop for Cas<V> {
         );
         #[cfg(test)]
         println!(
-            "Dropping Cas pools:reclaims:{},childs:{}, pools:{},{},{},{} allocs:{}/{}",
+            "Dropping Cas pools:reclaims:{}, pools:({},{},{},{},{}) allocs:{}/{}",
             self.reclaims.len(),
             self.child_pool.len(),
             self.node_trie_pool.len(),
