@@ -101,7 +101,7 @@ fn test_map() {
 
     let key_max = 100_000; // Ky::MAX;
     let n_ops = 1_000_000; // TODO
-    let n_threads = 1; // TODO
+    let n_threads = 16; // TODO
     let modul = key_max / n_threads;
 
     let mut map: Map<Ky, u64> = Map::new();
@@ -217,18 +217,18 @@ impl Op {
                 let key = (id * modul) + (key % modul);
                 Op::Get((id * modul) + (key % modul))
             }
-            Op::Set(key, _) if random::<u8>() % 5 > 0 => {
-                let key = (id * modul) + (key % modul);
-                Op::Get(key)
-            }
+            //Op::Set(key, _) if random::<u8>() % 5 > 0 => {
+            //    let key = (id * modul) + (key % modul);
+            //    Op::Get(key)
+            //}
             Op::Set(key, value) => {
                 let key = (id * modul) + (key % modul);
                 Op::Set(key, value)
             }
-            Op::Remove(key) if random::<u8>() % 5 > 0 => {
-                let key = (id * modul) + (key % modul);
-                Op::Get(key)
-            }
+            //Op::Remove(key) if random::<u8>() % 5 > 0 => {
+            //    let key = (id * modul) + (key % modul);
+            //    Op::Get(key)
+            //}
             Op::Remove(key) => {
                 let key = (id * modul) + (key % modul);
                 Op::Remove(key)

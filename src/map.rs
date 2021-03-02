@@ -1011,7 +1011,7 @@ where
 
     fn do_set(&mut self, key: K, value: V) -> (RGuard, Option<V>)
     where
-        K: Debug + PartialEq + Hash,
+        K: PartialEq + Hash,
     {
         let epocher = self.generate_epoch();
         let access_log = self.access_log.read().expect("fail-lock");
