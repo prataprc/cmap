@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
-    Arc,
+use std::{
+    fmt, result,
+    sync::{
+        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
+        Arc,
+    },
 };
 
 use crate::{map::Child, map::Item, map::Node};
@@ -27,6 +30,7 @@ impl Epoch {
 impl Drop for Epoch {
     fn drop(&mut self) {
         self.at.store(self.epoch.load(SeqCst), SeqCst);
+        self.epoch.fetch_add(1, SeqCst);
     }
 }
 
@@ -36,9 +40,9 @@ pub struct Cas<V> {
     newer: Vec<OwnedMem<V>>,
 
     child_pool: Vec<Box<Child<V>>>,
-    node_tomb_pool: Vec<Box<Node<V>>>,
-    node_list_pool: Vec<Box<Node<V>>>,
     node_trie_pool: Vec<Box<Node<V>>>,
+    node_list_pool: Vec<Box<Node<V>>>,
+    node_tomb_pool: Vec<Box<Node<V>>>,
     reclaim_pool: Vec<Box<Reclaim<V>>>,
 
     n_allocs: usize,
@@ -61,11 +65,12 @@ impl<V> Drop for Cas<V> {
         );
         #[cfg(test)]
         println!(
-            "cas pools:{},({},{},{}),{} allocs:{}/{}",
+            "Dropping Cas pools:reclaims:{},childs:{}, pools:{},{},{},{} allocs:{}/{}",
+            self.reclaims.len(),
             self.child_pool.len(),
             self.node_trie_pool.len(),
             self.node_list_pool.len(),
-            self.node_item_pool.len(),
+            self.node_tomb_pool.len(),
             self.reclaim_pool.len(),
             self.n_allocs,
             self.n_frees
@@ -268,6 +273,22 @@ pub struct Reclaim<V> {
     items: Vec<OwnedMem<V>>,
 }
 
+impl<V> fmt::Debug for Reclaim<V> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
+        let items = self
+            .items
+            .iter()
+            .map(|item| match item {
+                OwnedMem::Child(_) => "child",
+                OwnedMem::Node(_) => "node",
+                OwnedMem::None => "None",
+            })
+            .collect::<Vec<&str>>()
+            .join("");
+        write!(f, "epoch:{:?} items:{:?}", self.epoch, items)
+    }
+}
+
 impl<V> Default for Reclaim<V> {
     fn default() -> Self {
         Reclaim {
@@ -308,83 +329,3 @@ impl<V> OwnedMem<V> {
         }
     }
 }
-
-//pub fn gc_thread<V>(
-//    epoch: Arc<AtomicU64>,
-//    access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
-//    rx: mpsc::Receiver<Reclaim<V>>,
-//) {
-//    let mut objs = vec![];
-//
-//    loop {
-//        thread::sleep(EPOCH_PERIOD);
-//        let (mut fresh, exit) = receive_blocks(&rx);
-//        objs.append(&mut fresh);
-//        if exit {
-//            break;
-//        }
-//
-//        let (gc, exited) = {
-//            let log = access_log.read().expect("fail-lock");
-//            let (epochs, exited): (Vec<u64>, bool) = {
-//                let epochs: Vec<u64> = log.iter().map(|acc| acc.load(SeqCst)).collect();
-//                (
-//                    epochs
-//                        .clone()
-//                        .into_iter()
-//                        .map(|el| {
-//                            if el & ENTER_MASK == 0 {
-//                                epoch.load(SeqCst)
-//                            } else {
-//                                el & EPOCH_MASK
-//                            }
-//                        })
-//                        .collect(),
-//                    epochs.into_iter().all(|epoch| epoch == 0),
-//                )
-//            };
-//            let gc = match epochs.clone().into_iter().min() {
-//                Some(gc) => gc,
-//                None => continue,
-//            };
-//            (gc, exited)
-//        };
-//
-//        if exited {
-//            break;
-//        }
-//
-//        let _n = objs.len();
-//
-//        let mut new_objs = vec![];
-//        for obj in objs.into_iter() {
-//            match obj.epoch {
-//                Some(epoch) if epoch < gc => mem::drop(obj.items),
-//                Some(_) | None => new_objs.push(obj),
-//            }
-//        }
-//        objs = new_objs;
-//
-//        //#[cfg(test)] // TODO make it debug feature
-//        //println!("garbage collected epoch:{} {}/{}", gc, _n, objs.len());
-//    }
-//
-//    #[cfg(test)]
-//    println!("exiting with pending allocs {}", objs.len());
-//    mem::drop(objs);
-//}
-
-//fn receive_blocks<V>(rx: &mpsc::Receiver<Reclaim<V>>) -> (Vec<Reclaim<V>>, bool) {
-//    let mut objs = vec![];
-//    loop {
-//        match rx.try_recv() {
-//            Ok(recl) => objs.push(recl),
-//            Err(mpsc::TryRecvError::Empty) => return (objs, false),
-//            Err(mpsc::TryRecvError::Disconnected) => {
-//                #[cfg(test)]
-//                println!("exiting epoch-gc, disconnected");
-//                return (objs, true);
-//            }
-//        }
-//    }
-//}

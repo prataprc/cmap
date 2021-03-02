@@ -54,7 +54,7 @@ macro_rules! err_at {
 mod gc;
 mod map;
 
-pub use map::{key_to_hashbits, Map};
+pub use map::Map;
 
 /// Error variants that can be returned by this package's API.
 ///

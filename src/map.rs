@@ -186,7 +186,7 @@ impl<V> Drop for Map<V> {
             if gc_epoch == 0 || gc_epoch == u64::MAX {
                 // force collect, either all clones have been dropped or there was none.
                 self.cas.garbage_collect(u64::MAX)
-            } else if gc_epoch < u64::MAX {
+            } else {
                 self.cas.garbage_collect(gc_epoch)
             }
             thread::sleep(time::Duration::from_millis(10)); // TODO exponential backoff
@@ -261,8 +261,6 @@ impl<V> Map<V> {
             let epoch = Arc::clone(&self.epoch);
             Epoch::new(epoch, at)
         };
-
-        self.epoch.fetch_add(1, SeqCst);
 
         epoch
     }
@@ -850,6 +848,9 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
+        #[cfg(test)]
+        let key = key_to_hash32(&key);
+
         let epoch = self.epoch.load(SeqCst);
         let (gc_epoch, res) = {
             let (access_log, res) = self.do_get(key);
@@ -922,6 +923,9 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
+        #[cfg(test)]
+        let key = key_to_hash32(&key);
+
         let epoch = self.epoch.load(SeqCst);
         let (gc_epoch, res) = {
             let (access_log, res) = self.do_set(key, value);
@@ -1034,6 +1038,9 @@ impl<V> Map<V> {
     where
         V: Clone,
     {
+        #[cfg(test)]
+        let key = key_to_hash32(&key);
+
         let epoch = self.epoch.load(SeqCst);
         let (gc_epoch, compact, res) = {
             let (access_log, compact, res) = self.do_remove(key);
@@ -1228,7 +1235,7 @@ fn hamming_distance(w: u8, bmp: u16) -> Distance {
 }
 
 // TODO: Can we make this to use a generic hash function ?
-pub fn key_to_hashbits<K>(key: &K) -> [u8; 8]
+pub fn key_to_hash32<K>(key: &K) -> u32
 where
     K: Hash + ?Sized,
 {
@@ -1237,8 +1244,7 @@ where
     let mut hasher = crc::Hasher128::default();
     key.hash(&mut hasher);
     let code: u64 = hasher.finish();
-    let code: u32 = (((code >> 32) ^ code) & 0xFFFFFFFF) as u32;
-    slots(code)
+    (((code >> 32) ^ code) & 0xFFFFFFFF) as u32
 }
 
 fn slots(key: u32) -> [u8; 8] {

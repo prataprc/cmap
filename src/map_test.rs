@@ -10,52 +10,53 @@ fn test_list_operation() {
     let mut items: Vec<Item<u64>> = vec![
         Item {
             key: 20,
-            value: 200,
+            value: Some(200),
         },
         Item {
             key: 10,
-            value: 100,
+            value: Some(100),
         },
         Item {
             key: 50,
-            value: 500,
+            value: Some(500),
         },
         Item {
             key: 30,
-            value: 300,
+            value: Some(300),
         },
     ];
 
-    assert_eq!(update_into_list(10, &1000, &mut items), Some(100));
-    assert_eq!(update_into_list(10, &10000, &mut items), Some(1000));
-    assert_eq!(update_into_list(60, &600, &mut items), None);
-
-    let (items, item) = remove_from_list(20, &items).unwrap();
-    assert_eq!(item, 200);
-    let (items, item) = remove_from_list(60, &items).unwrap();
-    assert_eq!(item, 600);
-    assert_eq!(remove_from_list(20, &items), None);
-    assert_eq!(remove_from_list(60, &items), None);
+    assert_eq!(update_into_list((10, 1000).into(), &mut items), Some(100));
+    assert_eq!(update_into_list((10, 10000).into(), &mut items), Some(1000));
+    assert_eq!(update_into_list((60, 600).into(), &mut items), None);
 
     assert_eq!(get_from_list(10, &items), Some(10000));
     assert_eq!(get_from_list(50, &items), Some(500));
     assert_eq!(get_from_list(30, &items), Some(300));
-    assert_eq!(get_from_list(20, &items), None);
+    assert_eq!(get_from_list(20, &items), Some(200));
 
     assert_eq!(
         items,
         vec![
             Item {
+                key: 20,
+                value: Some(200),
+            },
+            Item {
                 key: 10,
-                value: 10000,
+                value: Some(10000),
             },
             Item {
                 key: 50,
-                value: 500,
+                value: Some(500),
             },
             Item {
                 key: 30,
-                value: 300,
+                value: Some(300),
+            },
+            Item {
+                key: 60,
+                value: Some(600),
             },
         ]
     );
@@ -96,10 +97,10 @@ fn test_map() {
     let seed: u128 = 108608880608704922882102056739567863183;
     println!("test_map seed {}", seed);
 
-    let n_ops = 2000; // TODO
-    let n_threads = 1; // TODO
+    let n_ops = 100_000; // TODO
+    let n_threads = 8; // TODO
     let modul = 16 / n_threads;
-    // let modul = u32::MAX / n_threads;
+    // let modul = u32::MAX / n_threads; // TODO
 
     let mut map: Map<u64> = Map::new();
     let mut handles = vec![];
@@ -125,7 +126,7 @@ fn test_map() {
         assert_eq!(map.get(*key), Some(val.clone()));
     }
 
-    // map.print();
+    map.print();
 
     mem::drop(map);
     mem::drop(btmap);
@@ -149,7 +150,7 @@ fn with_btreemap(
 
         let mut op: Op<u64> = uns.arbitrary().unwrap();
         op = op.adjust_key(id, modul);
-        // println!("{}-op -- {:?}", id, op);
+        println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
                 // map.print();
@@ -159,24 +160,25 @@ fn with_btreemap(
                 if map_val != btmap_val {
                     map.print();
                 }
+
                 counts[0][0] += 1;
                 counts[0][1] += if map_val.is_none() { 0 } else { 1 };
 
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Remove(key) => {
-                // map.print();
+                //// map.print();
 
-                let map_val = map.remove(key);
-                let btmap_val = btmap.remove(&key);
-                if map_val != btmap_val {
-                    map.print();
-                }
+                //let map_val = map.remove(key);
+                //let btmap_val = btmap.remove(&key);
+                //if map_val != btmap_val {
+                //    map.print();
+                //}
 
-                counts[1][0] += 1;
-                counts[1][1] += if map_val.is_none() { 0 } else { 1 };
+                //counts[1][0] += 1;
+                //counts[1][1] += if map_val.is_none() { 0 } else { 1 };
 
-                assert_eq!(map_val, btmap_val, "key {}", key);
+                //assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Get(key) => {
                 // map.print();
@@ -213,10 +215,18 @@ impl<V> Op<V> {
                 let key = (id * modul) + (key % modul);
                 Op::Get((id * modul) + (key % modul))
             }
+            //Op::Set(key, _) if random::<u8>() % 5 > 0 => {
+            //    let key = (id * modul) + (key % modul);
+            //    Op::Get(key)
+            //}
             Op::Set(key, value) => {
                 let key = (id * modul) + (key % modul);
                 Op::Set(key, value)
             }
+            //Op::Remove(key) if random::<u8>() % 5 > 0 => {
+            //    let key = (id * modul) + (key % modul);
+            //    Op::Get(key)
+            //}
             Op::Remove(key) => {
                 let key = (id * modul) + (key % modul);
                 Op::Remove(key)
