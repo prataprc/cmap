@@ -75,22 +75,22 @@ impl Drop for Epoch {
     }
 }
 
-pub struct Cas<V> {
-    reclaims: Vec<Box<Reclaim<V>>>,
-    older: Vec<OwnedMem<V>>,
-    newer: Vec<OwnedMem<V>>,
+pub struct Cas<K, V> {
+    reclaims: Vec<Box<Reclaim<K, V>>>,
+    older: Vec<OwnedMem<K, V>>,
+    newer: Vec<OwnedMem<K, V>>,
 
-    child_pool: Vec<Box<Child<V>>>,
-    node_trie_pool: Vec<Box<Node<V>>>,
-    node_list_pool: Vec<Box<Node<V>>>,
-    node_tomb_pool: Vec<Box<Node<V>>>,
-    reclaim_pool: Vec<Box<Reclaim<V>>>,
+    child_pool: Vec<Box<Child<K, V>>>,
+    node_trie_pool: Vec<Box<Node<K, V>>>,
+    node_list_pool: Vec<Box<Node<K, V>>>,
+    node_tomb_pool: Vec<Box<Node<K, V>>>,
+    reclaim_pool: Vec<Box<Reclaim<K, V>>>,
 
     n_allocs: usize,
     n_frees: usize,
 }
 
-impl<V> Drop for Cas<V> {
+impl<K, V> Drop for Cas<K, V> {
     fn drop(&mut self) {
         assert!(
             self.older.len() == 0,
@@ -119,7 +119,7 @@ impl<V> Drop for Cas<V> {
     }
 }
 
-impl<V> Cas<V> {
+impl<K, V> Cas<K, V> {
     pub fn new() -> Self {
         Cas {
             reclaims: Vec::with_capacity(64),
@@ -141,7 +141,7 @@ impl<V> Cas<V> {
         self.reclaims.len() > 0
     }
 
-    pub fn free_on_pass(&mut self, m: Mem<V>) {
+    pub fn free_on_pass(&mut self, m: Mem<K, V>) {
         match m {
             Mem::Child(ptr) => unsafe {
                 self.older.push(OwnedMem::Child(Box::from_raw(ptr)));
@@ -152,7 +152,7 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn free_on_fail(&mut self, m: Mem<V>) {
+    pub fn free_on_fail(&mut self, m: Mem<K, V>) {
         match m {
             Mem::Child(ptr) => unsafe {
                 self.newer.push(OwnedMem::Child(Box::from_raw(ptr)));
@@ -163,7 +163,10 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn alloc_node(&mut self, variant: char) -> Box<Node<V>> {
+    pub fn alloc_node(&mut self, variant: char) -> Box<Node<K, V>>
+    where
+        K: Default,
+    {
         match variant {
             'l' => match self.node_list_pool.pop() {
                 Some(val) => val,
@@ -197,7 +200,10 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn alloc_child(&mut self) -> Box<Child<V>> {
+    pub fn alloc_child(&mut self) -> Box<Child<K, V>>
+    where
+        K: Default,
+    {
         match self.child_pool.pop() {
             Some(val) => val,
             None => {
@@ -207,7 +213,7 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn alloc_reclaim(&mut self) -> Box<Reclaim<V>> {
+    pub fn alloc_reclaim(&mut self) -> Box<Reclaim<K, V>> {
         match self.reclaim_pool.pop() {
             Some(val) => val,
             None => {
@@ -217,7 +223,7 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn free_node(&mut self, mut node: Box<Node<V>>) {
+    pub fn free_node(&mut self, mut node: Box<Node<K, V>>) {
         let pool = match node.as_mut() {
             Node::Trie { bmp, childs } => {
                 *bmp = 0;
@@ -237,7 +243,7 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn free_child(&mut self, child: Box<Child<V>>) {
+    pub fn free_child(&mut self, child: Box<Child<K, V>>) {
         if self.child_pool.len() < MAX_POOL_SIZE {
             self.child_pool.push(child)
         } else {
@@ -245,7 +251,7 @@ impl<V> Cas<V> {
         }
     }
 
-    pub fn free_reclaim(&mut self, reclaim: Box<Reclaim<V>>) {
+    pub fn free_reclaim(&mut self, reclaim: Box<Reclaim<K, V>>) {
         if self.reclaim_pool.len() < MAX_POOL_SIZE {
             self.reclaim_pool.push(reclaim)
         } else {
@@ -309,12 +315,12 @@ impl<V> Cas<V> {
     }
 }
 
-pub struct Reclaim<V> {
+pub struct Reclaim<K, V> {
     epoch: Option<u64>,
-    items: Vec<OwnedMem<V>>,
+    items: Vec<OwnedMem<K, V>>,
 }
 
-impl<V> fmt::Debug for Reclaim<V> {
+impl<K, V> fmt::Debug for Reclaim<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
         let items = self
             .items
@@ -330,7 +336,7 @@ impl<V> fmt::Debug for Reclaim<V> {
     }
 }
 
-impl<V> Default for Reclaim<V> {
+impl<K, V> Default for Reclaim<K, V> {
     fn default() -> Self {
         Reclaim {
             epoch: None,
@@ -339,24 +345,24 @@ impl<V> Default for Reclaim<V> {
     }
 }
 
-pub enum Mem<V> {
-    Child(*mut Child<V>),
-    Node(*mut Node<V>),
+pub enum Mem<K, V> {
+    Child(*mut Child<K, V>),
+    Node(*mut Node<K, V>),
 }
 
-enum OwnedMem<V> {
-    Child(Box<Child<V>>),
-    Node(Box<Node<V>>),
+enum OwnedMem<K, V> {
+    Child(Box<Child<K, V>>),
+    Node(Box<Node<K, V>>),
     None,
 }
 
-impl<V> Default for OwnedMem<V> {
+impl<K, V> Default for OwnedMem<K, V> {
     fn default() -> Self {
         OwnedMem::None
     }
 }
 
-impl<V> OwnedMem<V> {
+impl<K, V> OwnedMem<K, V> {
     #[inline]
     fn leak(self) {
         match self {
