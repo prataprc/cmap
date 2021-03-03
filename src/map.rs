@@ -1559,6 +1559,8 @@ where
             .all(|child| unsafe { child.load(SeqCst).as_ref().unwrap() }.is_leaf())
 }
 
+// TODO: count the number of leaf nodes.
+// TODO: count the sum total of leaf nodes depth, compute average.
 #[derive(Default, Debug)]
 pub struct Stats {
     pub n_nodes: usize,
