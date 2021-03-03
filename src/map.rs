@@ -2,7 +2,7 @@ use std::{
     borrow::Borrow,
     fmt::Debug,
     hash::{Hash, Hasher},
-    ops::Deref,
+    ops::{Add, Deref},
     sync::{
         self,
         atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
@@ -61,7 +61,7 @@ macro_rules! generate_op {
 //   * Count the number of In{}, Node{} and Child{}
 //   * Count the number of Tomb nodes.
 //   * Count the number of Nodes that are tombable.
-// TODO: compact logic
+// TODO: compact() logic
 //   * To be called external to the library.
 //   * Check for Tomb nodes.
 //   * Compact trie-childs to capacity == length.
@@ -82,6 +82,9 @@ pub struct Map<K, V> {
     cas: gc::Cas<K, V>,
     n_compacts: Arc<AtomicUsize>,
     n_retries: Arc<AtomicUsize>,
+    n_pools: Arc<AtomicUsize>,
+    n_allocs: Arc<AtomicUsize>,
+    n_frees: Arc<AtomicUsize>,
 }
 
 pub struct In<K, V> {
@@ -180,6 +183,10 @@ where
         let node = unsafe { self.node.load(SeqCst).as_ref().unwrap() };
         node.print(prefix)
     }
+
+    fn validate(&self, depth: usize) -> Stats {
+        unsafe { self.node.load(SeqCst).as_ref().unwrap().validate(depth + 1) }
+    }
 }
 
 impl<K, V> Drop for Map<K, V> {
@@ -202,6 +209,9 @@ impl<K, V> Drop for Map<K, V> {
             }
             thread::sleep(time::Duration::from_millis(10)); // TODO exponential backoff
         }
+        self.n_pools.fetch_add(self.cas.to_pools_len(), SeqCst);
+        self.n_allocs.fetch_add(self.cas.to_alloc_count(), SeqCst);
+        self.n_frees.fetch_add(self.cas.to_free_count(), SeqCst);
     }
 }
 
@@ -234,6 +244,9 @@ where
             cas: gc::Cas::new(),
             n_compacts: Arc::new(AtomicUsize::new(0)),
             n_retries: Arc::new(AtomicUsize::new(0)),
+            n_pools: Arc::new(AtomicUsize::new(0)),
+            n_allocs: Arc::new(AtomicUsize::new(0)),
+            n_frees: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -252,7 +265,41 @@ where
             cas: gc::Cas::new(),
             n_compacts: Arc::clone(&self.n_compacts),
             n_retries: Arc::clone(&self.n_retries),
+            n_pools: Arc::clone(&self.n_pools),
+            n_allocs: Arc::clone(&self.n_allocs),
+            n_frees: Arc::clone(&self.n_frees),
         }
+    }
+
+    pub fn validate(&self) -> Stats
+    where
+        K: Debug,
+        V: Debug,
+    {
+        let _epoch = self.epoch.load(SeqCst);
+        let _guard = self.access_log.write().expect("lock-panic");
+
+        let mut stats = unsafe { self.root.load(SeqCst).as_ref().unwrap().validate(0) };
+        stats.n_compacts = self.n_compacts.load(SeqCst);
+        stats.n_retries = self.n_retries.load(SeqCst);
+        stats.n_pools = self.n_pools.load(SeqCst);
+        stats.n_allocs = self.n_allocs.load(SeqCst);
+        stats.n_frees = self.n_frees.load(SeqCst);
+
+        self.cas.validate();
+
+        {
+            let mem_count = stats.n_allocs - stats.n_frees;
+            let alg_count = stats.n_nodes + stats.n_childs + stats.n_pools;
+            assert!(
+                mem_count == alg_count.saturating_sub(1),
+                "{} {}",
+                mem_count,
+                alg_count
+            );
+        }
+
+        stats
     }
 }
 
@@ -261,7 +308,7 @@ where
     K: Debug,
     V: Debug,
 {
-    pub fn print(&self, deep: bool)
+    pub fn print(&self)
     where
         K: Debug,
         V: Debug,
@@ -269,15 +316,9 @@ where
         let epoch = self.epoch.load(SeqCst);
         let guard = self.access_log.write().expect("lock-panic");
         let access_log = guard.iter().map(|e| e.load(SeqCst));
-        let n_compacts = self.n_compacts.load(SeqCst);
-        let n_retries = self.n_retries.load(SeqCst);
-        println!(
-            "Map<{},{:?},{},{}>",
-            epoch, access_log, n_compacts, n_retries
-        );
-        if deep {
-            unsafe { self.root.load(SeqCst).as_ref().unwrap().print("  ") };
-        }
+        println!("Map<{},{:?}>", epoch, access_log);
+
+        unsafe { self.root.load(SeqCst).as_ref().unwrap().print("  ") };
     }
 }
 
@@ -497,6 +538,36 @@ where
                 items.iter().for_each(|item| item.print(&prefix));
             }
         }
+    }
+
+    fn validate(&self, depth: usize) -> Stats {
+        let mut stats = Stats::default();
+        stats.n_nodes += 1;
+
+        match self {
+            Node::Trie { childs, .. } => {
+                assert!(childs.len() <= 16);
+                stats.n_childs += childs.len();
+
+                for child in childs {
+                    match unsafe { child.load(SeqCst).as_ref().unwrap() } {
+                        Child::Leaf(_) => stats.n_items += 1,
+                        Child::Deep(inode) => stats = stats + inode.validate(depth),
+                    }
+                }
+            }
+            Node::Tomb { .. } => {
+                stats.n_tombs += 1;
+                stats.n_items += 1;
+            }
+            Node::List { items } => {
+                assert!(depth <= 9, "depth:{}", depth);
+                stats.n_lists += 1;
+                stats.n_items += items.len();
+            }
+        }
+
+        stats
     }
 }
 
@@ -1459,6 +1530,39 @@ where
         && childs
             .iter()
             .all(|child| unsafe { child.load(SeqCst).as_ref().unwrap() }.is_leaf())
+}
+
+#[derive(Default, Debug)]
+pub struct Stats {
+    pub n_nodes: usize,
+    pub n_childs: usize,
+    pub n_items: usize,
+    pub n_tombs: usize,
+    pub n_lists: usize,
+    pub n_compacts: usize,
+    pub n_retries: usize,
+    pub n_pools: usize,
+    pub n_allocs: usize,
+    pub n_frees: usize,
+}
+
+impl Add for Stats {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        Stats {
+            n_nodes: self.n_nodes + rhs.n_nodes,
+            n_childs: self.n_childs + rhs.n_childs,
+            n_items: self.n_items + rhs.n_items,
+            n_tombs: self.n_tombs + rhs.n_tombs,
+            n_lists: self.n_lists + rhs.n_lists,
+            n_compacts: self.n_compacts + rhs.n_compacts,
+            n_retries: self.n_retries + rhs.n_retries,
+            n_pools: self.n_pools + rhs.n_pools,
+            n_allocs: self.n_allocs + rhs.n_allocs,
+            n_frees: self.n_frees + rhs.n_frees,
+        }
+    }
 }
 
 #[cfg(test)]

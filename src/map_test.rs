@@ -96,10 +96,10 @@ fn test_hamming_distance() {
 #[test]
 fn test_map() {
     let seed: u128 = random();
-    let seed: u128 = 108608880608704922882102056739567863183;
+    // let seed: u128 = 108608880608704922882102056739567863183;
     println!("test_map seed {}", seed);
 
-    let key_max = 100_000; // Ky::MAX;
+    let key_max = 1_000_000; // Ky::MAX;
     let n_ops = 1_000_000; // TODO
     let n_threads = 16; // TODO
     let modul = key_max / n_threads;
@@ -127,8 +127,9 @@ fn test_map() {
 
     println!("len {}", map.len());
     assert_eq!(map.len(), btmap.len());
+    println!("Validate .... {:?}", map.validate());
 
-    map.print(false);
+    // map.print();
 
     mem::drop(map);
     mem::drop(btmap);
@@ -155,12 +156,12 @@ fn with_btreemap(
         // println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
-                // map.print(true);
+                // map.print();
 
                 let map_val = map.set(key, value);
                 let btmap_val = btmap.insert(key, value);
                 if map_val != btmap_val {
-                    map.print(true);
+                    map.print();
                 }
 
                 counts[0][0] += 1;
@@ -169,12 +170,12 @@ fn with_btreemap(
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Remove(key) => {
-                // map.print(true);
+                // map.print();
 
                 let map_val = map.remove(&key);
                 let btmap_val = btmap.remove(&key);
                 if map_val != btmap_val {
-                    map.print(true);
+                    map.print();
                 }
 
                 counts[1][0] += 1;
@@ -183,12 +184,12 @@ fn with_btreemap(
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
             Op::Get(key) => {
-                // map.print(true);
+                // map.print();
 
                 let map_val = map.get(&key);
                 let btmap_val = btmap.get(&key).cloned();
                 if map_val != btmap_val {
-                    map.print(true);
+                    map.print();
                 }
 
                 counts[2][0] += 1;

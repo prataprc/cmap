@@ -38,8 +38,6 @@ impl Epoch {
         }
     }
 
-    #[cfg(test)]
-    #[inline]
     pub fn count_retries(&self, retries: usize) {
         match retries {
             0 | 1 => (),
@@ -49,22 +47,8 @@ impl Epoch {
         }
     }
 
-    #[cfg(test)]
-    #[inline]
     pub fn count_compacts(&self) {
         self.n_compacts.fetch_add(1, SeqCst);
-    }
-
-    #[cfg(not(test))]
-    #[inline]
-    pub fn count_retries(&self, _retries: usize) {
-        ()
-    }
-
-    #[cfg(not(test))]
-    #[inline]
-    pub fn count_compacts(&self) {
-        ()
     }
 }
 
@@ -135,6 +119,22 @@ impl<K, V> Cas<K, V> {
             n_allocs: 0,
             n_frees: 0,
         }
+    }
+
+    pub fn to_pools_len(&self) -> usize {
+        self.child_pool.len()
+            + self.node_trie_pool.len()
+            + self.node_list_pool.len()
+            + self.node_tomb_pool.len()
+            + self.reclaim_pool.len()
+    }
+
+    pub fn to_alloc_count(&self) -> usize {
+        self.n_allocs
+    }
+
+    pub fn to_free_count(&self) -> usize {
+        self.n_frees
     }
 
     pub fn has_reclaims(&self) -> bool {
@@ -312,6 +312,32 @@ impl<K, V> Cas<K, V> {
                 Some(_) | None => (),
             }
         }
+    }
+
+    pub fn validate(&self) {
+        let n = self.reclaims.len();
+        assert!(n < 512, "reclaims:{}", n);
+
+        let n = self.older.len();
+        assert!(n < 512, "older:{}", n);
+
+        let n = self.newer.len();
+        assert!(n < 512, "newer:{}", n);
+
+        let n = self.child_pool.len();
+        assert!(n < 512, "child_pool:{}", n);
+
+        let n = self.node_trie_pool.len();
+        assert!(n < 512, "node_trie_pool:{}", n);
+
+        let n = self.node_list_pool.len();
+        assert!(n < 512, "node_list_pool:{}", n);
+
+        let n = self.node_tomb_pool.len();
+        assert!(n < 512, "node_tomb_pool:{}", n);
+
+        let n = self.reclaim_pool.len();
+        assert!(n < 512, "reclaim_pool:{}", n);
     }
 }
 
