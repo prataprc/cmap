@@ -1,8 +1,15 @@
 [package]
 name = "cmap"
 version = "0.1.0"
+description = "Concurrent multi-writer hash-map using trie"
+repository = "https://github.com/bnclabs/cmap"
+documentation = "https://docs.rs/cmap"
+keywords = ["storage", "concurrent", "lockless", "map", "sorting", "data-structure"]
+categories = ["algorithms", "database", "data-structure"]
 authors = ["prataprc <prataprc@gmail.com>"]
+license = "MIT"
 edition = "2018"
+readme = "README.md"
 
 [profile.release]
 debug = true
@@ -10,9 +17,19 @@ debug = true
 [profile.bench]
 debug = true
 
+[[bin]]
+name = "perf"
+required-features = ["perf"]
+
 [dependencies]
 fasthash = "0.4.0"
+structopt = { version = "0.3.20", default-features = false, optional = true }
+rand = { version = "0.7.3", features = ["small_rng"], optional = true }
 
 [dev-dependencies]
 rand = { version = "0.7.3", features = ["small_rng"] }
 arbitrary = { version = "0.4.7", features = ["derive"] }
+
+[features]
+perf = ["structopt", "rand"]
+
