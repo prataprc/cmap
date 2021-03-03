@@ -5,6 +5,8 @@ use std::{thread, time};
 
 use cmap::Map;
 
+type Ky = u32;
+
 /// Command line options.
 #[derive(Clone, StructOpt)]
 pub struct Opt {
@@ -32,13 +34,13 @@ fn main() {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let mut map: Map<u32, u64> = Map::new();
+    let mut map: Map<Ky, u64> = Map::new();
 
     // initial load
     let start = time::Instant::now();
     for _i in 0..opts.loads {
-        let (key, val): (u32, u64) = (rng.gen(), rng.gen());
-        map.set(key, val);
+        let (key, val): (Ky, u64) = (rng.gen(), rng.gen());
+        map.set(key % 1_000_000, val);
     }
 
     println!("loaded {} items in {:?}", opts.loads, start.elapsed());
@@ -55,16 +57,18 @@ fn main() {
         handle.join().unwrap()
     }
 
+    println!("{:?}", map.collisions());
+
     println!("{:?}", map.validate());
 }
 
-fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<u32, u64>) {
+fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64>) {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
     while (sets + rems + gets) > 0 {
-        let key = rng.gen::<u32>();
+        let key = rng.gen::<Ky>() % 1_000_000;
 
         let op = rng.gen::<usize>() % (sets + rems + gets);
         if op < sets {
