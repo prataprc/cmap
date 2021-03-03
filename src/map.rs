@@ -296,12 +296,6 @@ where
             );
         }
 
-        // TODO: can remove this.
-        //println!("size of node {}", mem::size_of::<Node<K, V>>());
-        //println!("size of aptr {}", mem::size_of::<AtomicPtr<Child<K, V>>>());
-        //println!("size of chil {}", mem::size_of::<Child<K, V>>());
-        //println!("size of item {}", mem::size_of::<Item<K, V>>());
-
         stats
     }
 
@@ -334,6 +328,16 @@ where
         println!("Map<{},{:?}>", epoch, access_log);
 
         unsafe { self.root.load(SeqCst).as_ref().unwrap().print("  ") };
+    }
+
+    pub fn print_sizing(&self) {
+        println!("size of node {:4}", mem::size_of::<Node<K, V>>());
+        println!(
+            "size of aptr {:4}",
+            mem::size_of::<AtomicPtr<Child<K, V>>>()
+        );
+        println!("size of chil {:4}", mem::size_of::<Child<K, V>>());
+        println!("size of item {:4}", mem::size_of::<Item<K, V>>());
     }
 }
 

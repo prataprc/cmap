@@ -37,6 +37,7 @@ fn main() {
     let guard = pprof::ProfilerGuard::new(100000).unwrap();
 
     let mut map: Map<Ky, u64> = Map::new();
+    map.print_sizing();
 
     // initial load
     let start = time::Instant::now();
