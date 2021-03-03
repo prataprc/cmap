@@ -1,11 +1,11 @@
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
-use std::{thread, time};
+use std::{fs, thread, time};
 
 use cmap::Map;
 
-type Ky = u32;
+type Ky = u16;
 
 /// Command line options.
 #[derive(Clone, StructOpt)]
@@ -34,13 +34,15 @@ fn main() {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
+    let guard = pprof::ProfilerGuard::new(100000).unwrap();
+
     let mut map: Map<Ky, u64> = Map::new();
 
     // initial load
     let start = time::Instant::now();
     for _i in 0..opts.loads {
         let (key, val): (Ky, u64) = (rng.gen(), rng.gen());
-        map.set(key % 1_000_000, val);
+        map.set(key, val);
     }
 
     println!("loaded {} items in {:?}", opts.loads, start.elapsed());
@@ -57,7 +59,10 @@ fn main() {
         handle.join().unwrap()
     }
 
-    println!("{:?}", map.collisions());
+    if let Ok(report) = guard.report().build() {
+        let file = fs::File::create("flamegraph.svg").unwrap();
+        report.flamegraph(file).unwrap();
+    };
 
     println!("{:?}", map.validate());
 }
@@ -68,7 +73,7 @@ fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64>) {
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
     while (sets + rems + gets) > 0 {
-        let key = rng.gen::<Ky>() % 1_000_000;
+        let key = rng.gen::<Ky>();
 
         let op = rng.gen::<usize>() % (sets + rems + gets);
         if op < sets {
