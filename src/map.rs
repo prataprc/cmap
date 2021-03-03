@@ -178,6 +178,13 @@ where
     {
         unsafe { self.node.load(SeqCst).as_ref().unwrap().validate(depth + 1) }
     }
+
+    //fn collisions(&self)
+    //where
+    //    K: Default + Clone + Hash,
+    //{
+    //    unsafe { self.node.load(SeqCst).as_ref().unwrap().collisions() };
+    //}
 }
 
 impl<K, V> Drop for Map<K, V> {
@@ -292,6 +299,17 @@ where
 
         stats
     }
+
+    //pub fn collisions(&self)
+    //where
+    //    K: Hash + Debug,
+    //    V: Debug,
+    //{
+    //    let _epoch = self.epoch.load(SeqCst);
+    //    let _guard = self.access_log.write().expect("lock-panic");
+
+    //    unsafe { self.root.load(SeqCst).as_ref().unwrap().collisions() };
+    //}
 }
 
 impl<K, V> Map<K, V>
@@ -557,6 +575,28 @@ where
 
         stats
     }
+
+    //fn collisions(&self)
+    //where
+    //    K: Hash,
+    //{
+    //    match self {
+    //        Node::Trie { childs, .. } => {
+    //            for child in childs {
+    //                match unsafe { child.load(SeqCst).as_ref().unwrap() } {
+    //                    Child::Leaf(_) => (),
+    //                    Child::Deep(inode) => inode.collisions(),
+    //                }
+    //            }
+    //        }
+    //        Node::Tomb { .. } => (),
+    //        Node::List { items } => {
+    //            for item in items {
+    //                println!("key:{:?},{}", item.key, key_to_hash32(&item.key))
+    //            }
+    //        }
+    //    }
+    //}
 }
 
 impl<K, V> Node<K, V>
