@@ -54,6 +54,7 @@ macro_rules! generate_op {
     };
 }
 
+// TODO: Rename set() API to insert() API.
 // TODO: stats() method
 //   * Count the number of Nodes that are tombable.
 // TODO: compact() logic
@@ -1608,6 +1609,9 @@ impl Add for Stats {
     }
 }
 
+#[cfg(test)]
+#[path = "dash_test.rs"]
+mod dash_test;
 #[cfg(test)]
 #[path = "map_test.rs"]
 mod map_test;

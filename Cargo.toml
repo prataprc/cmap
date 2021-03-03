@@ -31,6 +31,7 @@ pprof = { version = "0.4", features = ["flamegraph"], optional = true }
 [dev-dependencies]
 rand = { version = "0.7.3", features = ["small_rng"] }
 arbitrary = { version = "0.4.7", features = ["derive"] }
+dashmap = { version = "4.0.2"}
 
 [features]
 perf = ["structopt", "rand", "dashmap", "pprof"]
