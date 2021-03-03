@@ -76,30 +76,31 @@ pub struct Cas<K, V> {
 
 impl<K, V> Drop for Cas<K, V> {
     fn drop(&mut self) {
-        assert!(
+        debug_assert!(
             self.older.len() == 0,
             "invariant Cas::older should be ZERO on drop"
         );
-        assert!(
+        debug_assert!(
             self.newer.len() == 0,
             "invariant Cas::newer should be ZERO on drop"
         );
-        assert!(
+        debug_assert!(
             self.reclaims.len() == 0,
             "invariant Cas::reclaims should be ZERO on drop"
         );
-        #[cfg(test)]
-        println!(
-            "Dropping Cas pools:reclaims:{}, pools:({},{},{},{},{}) allocs:{}/{}",
-            self.reclaims.len(),
-            self.child_pool.len(),
-            self.node_trie_pool.len(),
-            self.node_list_pool.len(),
-            self.node_tomb_pool.len(),
-            self.reclaim_pool.len(),
-            self.n_allocs,
-            self.n_frees
-        );
+
+        //#[cfg(test)]
+        //println!(
+        //    "Dropping Cas pools:reclaims:{}, pools:({},{},{},{},{}) allocs:{}/{}",
+        //    self.reclaims.len(),
+        //    self.child_pool.len(),
+        //    self.node_trie_pool.len(),
+        //    self.node_list_pool.len(),
+        //    self.node_tomb_pool.len(),
+        //    self.reclaim_pool.len(),
+        //    self.n_allocs,
+        //    self.n_frees
+        //);
     }
 }
 
@@ -316,28 +317,28 @@ impl<K, V> Cas<K, V> {
 
     pub fn validate(&self) {
         let n = self.reclaims.len();
-        assert!(n < 512, "reclaims:{}", n);
+        debug_assert!(n < 512, "reclaims:{}", n);
 
         let n = self.older.len();
-        assert!(n < 512, "older:{}", n);
+        debug_assert!(n < 512, "older:{}", n);
 
         let n = self.newer.len();
-        assert!(n < 512, "newer:{}", n);
+        debug_assert!(n < 512, "newer:{}", n);
 
         let n = self.child_pool.len();
-        assert!(n < 512, "child_pool:{}", n);
+        debug_assert!(n < 512, "child_pool:{}", n);
 
         let n = self.node_trie_pool.len();
-        assert!(n < 512, "node_trie_pool:{}", n);
+        debug_assert!(n < 512, "node_trie_pool:{}", n);
 
         let n = self.node_list_pool.len();
-        assert!(n < 512, "node_list_pool:{}", n);
+        debug_assert!(n < 512, "node_list_pool:{}", n);
 
         let n = self.node_tomb_pool.len();
-        assert!(n < 512, "node_tomb_pool:{}", n);
+        debug_assert!(n < 512, "node_tomb_pool:{}", n);
 
         let n = self.reclaim_pool.len();
-        assert!(n < 512, "reclaim_pool:{}", n);
+        debug_assert!(n < 512, "reclaim_pool:{}", n);
     }
 }
 

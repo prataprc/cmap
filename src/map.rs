@@ -53,23 +53,11 @@ macro_rules! generate_op {
     };
 }
 
-// TODO: validate() method
-//   * make sure that Node::List are only at the last level.
-//   * make sure that there are no, non-root, Node::Trie with empty childs.
-//   * one the root In{} and Node{} is allocated it should never be deallocated.
 // TODO: stats() method
-//   * Count the number of In{}, Node{} and Child{}
-//   * Count the number of Tomb nodes.
 //   * Count the number of Nodes that are tombable.
 // TODO: compact() logic
-//   * To be called external to the library.
-//   * Check for Tomb nodes.
 //   * Compact trie-childs to capacity == length.
 //   * Compact list-items to capacity == length.
-// TODO:
-//   * review `_ => ` catch all arms.
-//   * review expect() and unwrap() calls
-//   * review `as` type-casts.
 
 type RGuard<'a> = sync::RwLockReadGuard<'a, Vec<Arc<AtomicU64>>>;
 
@@ -176,15 +164,18 @@ where
 
 impl<K, V> In<K, V>
 where
-    K: Debug,
-    V: Debug,
+    K: Default + Clone + Debug,
+    V: Clone + Debug,
 {
     fn print(&self, prefix: &str) {
         let node = unsafe { self.node.load(SeqCst).as_ref().unwrap() };
         node.print(prefix)
     }
 
-    fn validate(&self, depth: usize) -> Stats {
+    fn validate(&self, depth: usize) -> Stats
+    where
+        K: Default + Clone,
+    {
         unsafe { self.node.load(SeqCst).as_ref().unwrap().validate(depth + 1) }
     }
 }
@@ -217,8 +208,8 @@ impl<K, V> Drop for Map<K, V> {
 
 impl<K, V> Map<K, V>
 where
-    K: 'static + Send,
-    V: 'static + Send,
+    K: 'static + Send + Default + Clone,
+    V: 'static + Send + Clone,
 {
     pub fn new() -> Map<K, V> {
         let root = {
@@ -291,9 +282,9 @@ where
         {
             let mem_count = stats.n_allocs - stats.n_frees;
             let alg_count = stats.n_nodes + stats.n_childs + stats.n_pools;
-            assert!(
+            debug_assert!(
                 mem_count == alg_count.saturating_sub(1),
-                "{} {}",
+                "mem_count:{} alg_count:{}",
                 mem_count,
                 alg_count
             );
@@ -305,8 +296,8 @@ where
 
 impl<K, V> Map<K, V>
 where
-    K: Debug,
-    V: Debug,
+    K: Default + Clone + Debug,
+    V: Clone + Debug,
 {
     pub fn print(&self)
     where
@@ -500,14 +491,10 @@ impl<K, V> Node<K, V> {
 
 impl<K, V> Node<K, V>
 where
-    K: Debug,
-    V: Debug,
+    K: Default + Clone + Debug,
+    V: Clone + Debug,
 {
-    fn print(&self, prefix: &str)
-    where
-        K: Debug,
-        V: Debug,
-    {
+    fn print(&self, prefix: &str) {
         match self {
             Node::Trie { bmp, childs } => {
                 println!("{}Node::Trie<{:x},{}>", prefix, bmp, childs.len());
@@ -540,13 +527,14 @@ where
         }
     }
 
+    // make sure that Node::List are only at the last level.
     fn validate(&self, depth: usize) -> Stats {
         let mut stats = Stats::default();
         stats.n_nodes += 1;
 
         match self {
             Node::Trie { childs, .. } => {
-                assert!(childs.len() <= 16);
+                debug_assert!(childs.len() <= 16);
                 stats.n_childs += childs.len();
 
                 for child in childs {
@@ -561,7 +549,7 @@ where
                 stats.n_items += 1;
             }
             Node::List { items } => {
-                assert!(depth <= 9, "depth:{}", depth);
+                debug_assert!(depth == 9, "depth:{}", depth);
                 stats.n_lists += 1;
                 stats.n_items += items.len();
             }

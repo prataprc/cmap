@@ -99,8 +99,8 @@ fn test_map() {
     // let seed: u128 = 108608880608704922882102056739567863183;
     println!("test_map seed {}", seed);
 
-    let key_max = 1_000_000; // Ky::MAX;
-    let n_ops = 1_000_000; // TODO
+    let key_max = 1024 * 1024 * 1024; // Ky::MAX;
+    let n_ops = 10_000_000; // TODO
     let n_threads = 16; // TODO
     let modul = key_max / n_threads;
 
@@ -218,18 +218,10 @@ impl Op {
                 let key = (id * modul) + (key % modul);
                 Op::Get((id * modul) + (key % modul))
             }
-            //Op::Set(key, _) if random::<u8>() % 5 > 0 => {
-            //    let key = (id * modul) + (key % modul);
-            //    Op::Get(key)
-            //}
             Op::Set(key, value) => {
                 let key = (id * modul) + (key % modul);
                 Op::Set(key, value)
             }
-            //Op::Remove(key) if random::<u8>() % 5 > 0 => {
-            //    let key = (id * modul) + (key % modul);
-            //    Op::Get(key)
-            //}
             Op::Remove(key) => {
                 let key = (id * modul) + (key % modul);
                 Op::Remove(key)
