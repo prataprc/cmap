@@ -2,6 +2,7 @@ use std::{
     borrow::Borrow,
     fmt::Debug,
     hash::{Hash, Hasher},
+    mem,
     ops::{Add, Deref},
     sync::{
         self,
@@ -172,10 +173,7 @@ where
         node.print(prefix)
     }
 
-    fn validate(&self, depth: usize) -> Stats
-    where
-        K: Default + Clone,
-    {
+    fn validate(&self, depth: usize) -> Stats {
         unsafe { self.node.load(SeqCst).as_ref().unwrap().validate(depth + 1) }
     }
 
@@ -280,9 +278,9 @@ where
         let mut stats = unsafe { self.root.load(SeqCst).as_ref().unwrap().validate(0) };
         stats.n_compacts = self.n_compacts.load(SeqCst);
         stats.n_retries = self.n_retries.load(SeqCst);
-        stats.n_pools = self.n_pools.load(SeqCst);
-        stats.n_allocs = self.n_allocs.load(SeqCst);
-        stats.n_frees = self.n_frees.load(SeqCst);
+        stats.n_pools = self.n_pools.load(SeqCst) + self.cas.to_pools_len();
+        stats.n_allocs = self.n_allocs.load(SeqCst) + self.cas.to_alloc_count();
+        stats.n_frees = self.n_frees.load(SeqCst) + self.cas.to_free_count();
 
         self.cas.validate();
 
@@ -296,6 +294,12 @@ where
                 alg_count
             );
         }
+
+        // TODO: can remove this.
+        //println!("size of node {}", mem::size_of::<Node<K, V>>());
+        //println!("size of aptr {}", mem::size_of::<AtomicPtr<Child<K, V>>>());
+        //println!("size of chil {}", mem::size_of::<Child<K, V>>());
+        //println!("size of item {}", mem::size_of::<Item<K, V>>());
 
         stats
     }
@@ -332,12 +336,9 @@ where
 }
 
 impl<K, V> Map<K, V> {
-    fn generate_epoch(&self) -> Epoch {
+    fn generate_epoch(&self, access_log: &RGuard) -> Epoch {
         let epoch = {
-            let at = {
-                let access_log = self.access_log.read().expect("lock-panic");
-                Arc::clone(&access_log[self.id])
-            };
+            let at = Arc::clone(&access_log[self.id]);
             let epoch = Arc::clone(&self.epoch);
             let n_compacts = Arc::clone(&self.n_compacts);
             let n_retries = Arc::clone(&self.n_retries);
@@ -550,6 +551,7 @@ where
         let mut stats = Stats::default();
         stats.n_nodes += 1;
 
+        stats.n_mem += mem::size_of::<Node<K, V>>();
         match self {
             Node::Trie { childs, .. } => {
                 debug_assert!(childs.len() <= 16);
@@ -561,6 +563,11 @@ where
                         Child::Deep(inode) => stats = stats + inode.validate(depth),
                     }
                 }
+                stats.n_mem += {
+                    let n = mem::size_of::<AtomicPtr<Child<K, V>>>();
+                    let m = mem::size_of::<Child<K, V>>();
+                    (childs.capacity() * n) + (childs.len() * m)
+                };
             }
             Node::Tomb { .. } => {
                 stats.n_tombs += 1;
@@ -570,6 +577,7 @@ where
                 debug_assert!(depth == 9, "depth:{}", depth);
                 stats.n_lists += 1;
                 stats.n_items += items.len();
+                stats.n_mem += items.capacity() * mem::size_of::<Item<K, V>>();
             }
         }
 
@@ -1045,8 +1053,8 @@ where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
     {
-        let _epocher = self.generate_epoch();
         let access_log = self.access_log.read().expect("fail-lock");
+        let _epocher = self.generate_epoch(&access_log);
 
         let ws = slots(key_to_hash32(key));
         let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
@@ -1112,8 +1120,8 @@ where
     where
         K: PartialEq + Hash,
     {
-        let epocher = self.generate_epoch();
         let access_log = self.access_log.read().expect("fail-lock");
+        let epocher = self.generate_epoch(&access_log);
 
         let mut retries = 0;
         let ws = slots(key_to_hash32(&key));
@@ -1245,8 +1253,8 @@ where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
     {
-        let epocher = self.generate_epoch();
         let access_log = self.access_log.read().expect("fail-lock");
+        let epocher = self.generate_epoch(&access_log);
 
         let mut retries = 0;
         let ws = slots(key_to_hash32(key));
@@ -1331,8 +1339,8 @@ where
         K: Borrow<Q>,
         Q: Hash + ?Sized,
     {
-        let epocher = self.generate_epoch();
         let _access_log = self.access_log.read().expect("fail-lock");
+        let epocher = self.generate_epoch(&_access_log);
 
         epocher.count_compacts();
 
@@ -1473,7 +1481,6 @@ fn hamming_distance(w: u8, bmp: u16) -> Distance {
 }
 
 // TODO: Can we make this to use a generic hash function ?
-#[inline]
 fn key_to_hash32<K>(key: &K) -> u32
 where
     K: Hash + ?Sized,
@@ -1486,7 +1493,6 @@ where
     (((code >> 32) ^ code) & 0xFFFFFFFF) as u32
 }
 
-#[inline]
 fn slots(key: u32) -> [u8; 8] {
     let mut arr = [0_u8; 8];
     for i in 0..8 {
@@ -1572,6 +1578,7 @@ pub struct Stats {
     pub n_pools: usize,
     pub n_allocs: usize,
     pub n_frees: usize,
+    pub n_mem: usize,
 }
 
 impl Add for Stats {
@@ -1589,6 +1596,7 @@ impl Add for Stats {
             n_pools: self.n_pools + rhs.n_pools,
             n_allocs: self.n_allocs + rhs.n_allocs,
             n_frees: self.n_frees + rhs.n_frees,
+            n_mem: self.n_mem + rhs.n_mem,
         }
     }
 }
