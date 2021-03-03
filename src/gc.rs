@@ -367,7 +367,7 @@ impl<K, V> Default for Reclaim<K, V> {
     fn default() -> Self {
         Reclaim {
             epoch: None,
-            items: Vec::with_capacity(64),
+            items: Vec::with_capacity(2),
         }
     }
 }
