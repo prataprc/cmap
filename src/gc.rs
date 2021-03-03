@@ -167,6 +167,7 @@ impl<K, V> Cas<K, V> {
     pub fn alloc_node(&mut self, variant: char) -> Box<Node<K, V>>
     where
         K: Default,
+        V: Default,
     {
         match variant {
             'l' => match self.node_list_pool.pop() {
@@ -204,6 +205,7 @@ impl<K, V> Cas<K, V> {
     pub fn alloc_child(&mut self) -> Box<Child<K, V>>
     where
         K: Default,
+        V: Default,
     {
         match self.child_pool.pop() {
             Some(val) => val,

@@ -5,7 +5,7 @@ use std::{fs, thread, time};
 
 use cmap::Map;
 
-type Ky = u16;
+type Ky = u32;
 
 /// Command line options.
 #[derive(Clone, StructOpt)]

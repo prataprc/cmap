@@ -4,3 +4,4 @@ core
 arc.check
 rc.check
 test.out
+flamegraph.svg

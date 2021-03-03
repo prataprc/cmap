@@ -99,27 +99,16 @@ pub enum Child<K, V> {
     Leaf(Item<K, V>),
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Default, PartialEq, Debug)]
 pub struct Item<K, V> {
     key: K,
-    value: Option<V>,
-}
-
-impl<K, V> Default for Item<K, V>
-where
-    K: Default,
-{
-    fn default() -> Self {
-        Item {
-            key: K::default(),
-            value: None,
-        }
-    }
+    value: V,
 }
 
 impl<K, V> Default for Child<K, V>
 where
     K: Default,
+    V: Default,
 {
     fn default() -> Self {
         Child::Leaf(Item::default())
@@ -147,10 +136,7 @@ impl<K, V> Drop for Root<K, V> {
 
 impl<K, V> From<(K, V)> for Item<K, V> {
     fn from((key, value): (K, V)) -> Self {
-        Item {
-            key,
-            value: Some(value),
-        }
+        Item { key, value }
     }
 }
 
@@ -167,7 +153,7 @@ where
 impl<K, V> In<K, V>
 where
     K: Default + Clone + Debug,
-    V: Clone + Debug,
+    V: Default + Clone + Debug,
 {
     fn print(&self, prefix: &str) {
         let node = unsafe { self.node.load(SeqCst).as_ref().unwrap() };
@@ -216,7 +202,7 @@ impl<K, V> Drop for Map<K, V> {
 impl<K, V> Map<K, V>
 where
     K: 'static + Send + Default + Clone,
-    V: 'static + Send + Clone,
+    V: 'static + Send + Default + Clone,
 {
     pub fn new() -> Map<K, V> {
         let root = {
@@ -316,7 +302,7 @@ where
 impl<K, V> Map<K, V>
 where
     K: Default + Clone + Debug,
-    V: Clone + Debug,
+    V: Default + Clone + Debug,
 {
     pub fn print(&self)
     where
@@ -359,7 +345,7 @@ impl<K, V> Map<K, V> {
 impl<K, V> Child<K, V>
 where
     K: Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     fn new_leaf(leaf: Item<K, V>, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V> {
         let mut child = cas.alloc_child();
@@ -432,7 +418,7 @@ impl<K, V> Child<K, V> {
 impl<K, V> Node<K, V>
 where
     K: Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     #[inline]
     fn get_child(&self, n: usize) -> *mut Child<K, V> {
@@ -471,10 +457,7 @@ where
     {
         match self {
             Node::List { items } => get_from_list(key, items),
-            Node::Tomb { item } if item.key.borrow() == key => {
-                let value = item.value.as_ref().cloned().unwrap();
-                Some(value)
-            }
+            Node::Tomb { item } if item.key.borrow() == key => Some(item.value.clone()),
             Node::Tomb { .. } => None,
             Node::Trie { .. } => None,
         }
@@ -518,7 +501,7 @@ impl<K, V> Node<K, V> {
 impl<K, V> Node<K, V>
 where
     K: Default + Clone + Debug,
-    V: Clone + Debug,
+    V: Default + Clone + Debug,
 {
     fn print(&self, prefix: &str) {
         match self {
@@ -618,7 +601,7 @@ where
 impl<K, V> Node<K, V>
 where
     K: Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     fn new_bi_list(item: Item<K, V>, leaf: &Item<K, V>, cas: &mut Cas<K, V>) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('l');
@@ -909,19 +892,24 @@ where
 
     fn remove_from_list(n: usize, op: CasOp<K, V>) -> (bool, CasRc<Option<V>>) {
         let (compact, new, ov) = match unsafe { op.old.as_ref().unwrap() } {
-            Node::List { items } if items.len() == 1 => {
-                let ov = items[n].value.as_ref().cloned().unwrap();
-                (true, Node::new_list_without(items, n, op.cas), ov)
-            }
+            Node::List { items } if items.len() == 1 => (
+                true,
+                Node::new_list_without(items, n, op.cas),
+                items[n].value.clone(),
+            ),
             Node::List { items } if items.len() == 2 => {
                 let j = [1, 0][n];
-                let ov = items[n].value.as_ref().cloned().unwrap();
-                (true, Node::new_tomb(&items[j], op.cas), ov)
+                (
+                    true,
+                    Node::new_tomb(&items[j], op.cas),
+                    items[n].value.clone(),
+                )
             }
-            Node::List { items } if items.len() > 0 => {
-                let ov = items[n].value.as_ref().cloned().unwrap();
-                (false, Node::new_list_without(items, n, op.cas), ov)
-            }
+            Node::List { items } if items.len() > 0 => (
+                false,
+                Node::new_list_without(items, n, op.cas),
+                items[n].value.clone(),
+            ),
             Node::List { .. } => unreachable!(),
             Node::Tomb { .. } => unreachable!(),
             Node::Trie { .. } => unreachable!(),
@@ -1036,7 +1024,7 @@ where
 impl<K, V> Map<K, V>
 where
     K: Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     pub fn get<Q>(&mut self, key: &Q) -> Option<V>
     where
@@ -1091,8 +1079,7 @@ where
                             match unsafe { ptr.as_ref().unwrap() } {
                                 Child::Deep(next_inode) => next_inode,
                                 Child::Leaf(item) if item.key.borrow() == key => {
-                                    let ov = item.value.as_ref().cloned().unwrap();
-                                    break Some(ov);
+                                    break Some(item.value.clone());
                                 }
                                 Child::Leaf(_) => break None,
                             }
@@ -1101,7 +1088,7 @@ where
                 }
                 Node::List { .. } => unreachable!(),
                 Node::Tomb { item } if item.key.borrow() == key => {
-                    break Some(item.value.as_ref().cloned().unwrap())
+                    break Some(item.value.clone());
                 }
                 Node::Tomb { .. } => break None,
             }
@@ -1201,9 +1188,7 @@ where
 
                         let item = (key.clone(), value.clone()).into();
                         match Node::set_child(item, n, op) {
-                            CasRc::Ok(_) => {
-                                break 'retry Some(ot.value.as_ref().cloned().unwrap());
-                            }
+                            CasRc::Ok(_) => break 'retry Some(ot.value.clone()),
                             CasRc::Retry => continue 'retry,
                         }
                     }
@@ -1328,7 +1313,7 @@ where
                     Child::Deep(next_inode) => next_inode,
                     Child::Leaf(item) if item.key.borrow() == key => {
                         let op = generate_op!(self, inode, old);
-                        let ov = item.value.as_ref().cloned().unwrap();
+                        let ov = item.value.clone();
                         match Node::remove_child(w, n, op) {
                             (compact, CasRc::Ok(_)) => break 'retry (compact, Some(ov)),
                             (_, CasRc::Retry) => continue 'retry,
@@ -1529,7 +1514,7 @@ where
     Q: PartialEq + Hash + ?Sized,
 {
     match items.iter().find(|x| x.key.borrow() == key) {
-        Some(x) => Some(x.value.as_ref().cloned().unwrap()),
+        Some(x) => Some(x.value.clone()),
         None => None,
     }
 }
@@ -1537,13 +1522,13 @@ where
 fn update_into_list<K, V>(item: Item<K, V>, items: &mut Vec<Item<K, V>>) -> Option<V>
 where
     K: PartialEq + Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     match items.iter().enumerate().find(|(_, x)| x.key == item.key) {
         Some((i, x)) => {
             let old_value = x.value.clone();
             items[i] = item;
-            Some(old_value.unwrap())
+            Some(old_value)
         }
         None => {
             items.push(item);
@@ -1555,7 +1540,7 @@ where
 fn has_tomb_empty_child<K, V>(childs: &[AtomicPtr<Child<K, V>>]) -> bool
 where
     K: Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     childs.iter().any(|child| {
         let c = unsafe { child.load(SeqCst).as_ref().unwrap() };
@@ -1566,7 +1551,7 @@ where
 fn has_single_child_leaf<K, V>(childs: &[AtomicPtr<Child<K, V>>]) -> bool
 where
     K: Default + Clone,
-    V: Clone,
+    V: Default + Clone,
 {
     childs.len() == 1
         && childs
