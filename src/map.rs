@@ -54,6 +54,7 @@ macro_rules! generate_op {
     };
 }
 
+// TODO: atomic-ordering replace SeqCst with Acquire/Release.
 // TODO: Rename set() API to insert() API.
 // TODO: stats() method
 //   * Count the number of Nodes that are tombable.
@@ -325,6 +326,7 @@ where
         );
         println!("size of chil {:4}", mem::size_of::<Child<K, V>>());
         println!("size of item {:4}", mem::size_of::<Item<K, V>>());
+        println!("size of inod {:4}", mem::size_of::<In<K, V>>());
     }
 }
 
