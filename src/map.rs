@@ -16,6 +16,7 @@ use crate::gc::{self, Cas};
 const SLOT_MASK: u32 = 0xF;
 const ENTER_MASK: u64 = 0x8000000000000000;
 const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
+const GC_PERIOD: usize = 16; // do gc for every 128 write access.
 
 #[allow(unused_macros)]
 macro_rules! format_ws {
@@ -74,6 +75,7 @@ pub struct Map<K, V> {
     access_log: Arc<Vec<AtomicU64>>,
     map_pool: Arc<Mutex<Vec<Map<K, V>>>>,
     cas: gc::Cas<K, V>,
+    gc_period: usize,
     n_pools: Arc<AtomicUsize>,
     n_allocs: Arc<AtomicUsize>,
     n_frees: Arc<AtomicUsize>,
@@ -224,6 +226,7 @@ where
             access_log: Arc::new(access_log),
             map_pool: Arc::new(Mutex::new(vec![])),
             cas,
+            gc_period: GC_PERIOD,
             n_pools: Arc::new(AtomicUsize::new(0)),
             n_allocs: Arc::new(AtomicUsize::new(0)),
             n_frees: Arc::new(AtomicUsize::new(0)),
@@ -244,6 +247,7 @@ where
                 access_log: Arc::clone(&self.access_log),
                 map_pool: Arc::clone(&self.map_pool),
                 cas: gc::Cas::new(),
+                gc_period: GC_PERIOD,
                 n_pools: Arc::clone(&self.n_pools),
                 n_allocs: Arc::clone(&self.n_allocs),
                 n_frees: Arc::clone(&self.n_frees),
@@ -1066,13 +1070,16 @@ where
     where
         K: PartialEq + Hash,
     {
-        let (seqno, res) = {
-            let (seqno, res) = self.do_set(key, value);
-            (gc_epoch!(self.access_log, seqno), res)
-        };
-        if seqno < u64::MAX {
-            self.cas.garbage_collect(seqno)
+        let (seqno, res) = self.do_set(key, value);
+        if self.gc_period == 0 {
+            let seqno = gc_epoch!(self.access_log, seqno);
+            if seqno < u64::MAX {
+                self.cas.garbage_collect(seqno)
+            }
+            self.gc_period = GC_PERIOD; // reload
         }
+        self.gc_period = self.gc_period.saturating_sub(1);
+
         res
     }
 
@@ -1192,16 +1199,19 @@ where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
     {
-        let (seqno, mut compact, res) = {
-            let (seqno, compact, res) = self.do_remove(key);
-            (gc_epoch!(self.access_log, seqno), compact, res)
-        };
+        let (seqno, mut compact, res) = self.do_remove(key);
         while compact {
             compact = self.do_compact(key)
         }
-        if seqno < u64::MAX {
-            self.cas.garbage_collect(seqno)
+        if self.gc_period == 0 {
+            let seqno = gc_epoch!(self.access_log, seqno);
+            if seqno < u64::MAX {
+                self.cas.garbage_collect(seqno)
+            }
+            self.gc_period = GC_PERIOD; // reload
         }
+        self.gc_period = self.gc_period.saturating_sub(1);
+
         res
     }
 
