@@ -206,11 +206,9 @@ where
     V: 'static + Send + Default + Clone,
 {
     pub fn new() -> Map<K, V> {
+        let mut cas = gc::Cas::new();
         let root = {
-            let node = Box::new(Node::Trie {
-                bmp: u16::default(),
-                childs: Vec::default(),
-            });
+            let node = cas.alloc_node('t');
             let inode = Box::new(In {
                 node: AtomicPtr::new(Box::leak(node)),
             });
@@ -226,7 +224,7 @@ where
 
             epoch: Arc::new(AtomicU64::new(1)),
             access_log,
-            cas: gc::Cas::new(),
+            cas,
             n_compacts: Arc::new(AtomicUsize::new(0)),
             n_retries: Arc::new(AtomicUsize::new(0)),
             n_pools: Arc::new(AtomicUsize::new(0)),
@@ -277,7 +275,7 @@ where
             let mem_count = stats.n_allocs - stats.n_frees;
             let alg_count = stats.n_nodes + stats.n_childs + stats.n_pools;
             debug_assert!(
-                mem_count == alg_count.saturating_sub(1),
+                mem_count == alg_count,
                 "mem_count:{} alg_count:{}",
                 mem_count,
                 alg_count
