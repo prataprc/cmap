@@ -547,17 +547,17 @@ where
                 debug_assert!(childs.len() <= 16);
                 stats.n_childs += childs.len();
 
+                stats.n_mem += {
+                    let n = mem::size_of::<AtomicPtr<Child<K, V>>>();
+                    let m = mem::size_of::<Child<K, V>>();
+                    (childs.capacity() * n) + (childs.len() * m)
+                };
                 for child in childs {
                     match unsafe { child.load(SeqCst).as_ref().unwrap() } {
                         Child::Leaf(_) => stats.n_items += 1,
                         Child::Deep(inode) => stats = stats + inode.validate(depth),
                     }
                 }
-                stats.n_mem += {
-                    let n = mem::size_of::<AtomicPtr<Child<K, V>>>();
-                    let m = mem::size_of::<Child<K, V>>();
-                    (childs.capacity() * n) + (childs.len() * m)
-                };
             }
             Node::Tomb { .. } => {
                 stats.n_tombs += 1;
