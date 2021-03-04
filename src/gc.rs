@@ -1,5 +1,5 @@
 use std::{
-    fmt, result,
+    fmt, ptr, result,
     sync::{
         atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
         Arc,
@@ -144,22 +144,22 @@ impl<K, V> Cas<K, V> {
 
     pub fn free_on_pass(&mut self, m: Mem<K, V>) {
         match m {
-            Mem::Child(ptr) => unsafe {
-                self.older.push(OwnedMem::Child(Box::from_raw(ptr)));
+            Mem::Child(p) => unsafe {
+                self.older.push(OwnedMem::Child(Box::from_raw(p)));
             },
-            Mem::Node(ptr) => unsafe {
-                self.older.push(OwnedMem::Node(Box::from_raw(ptr)));
+            Mem::Node(p) => unsafe {
+                self.older.push(OwnedMem::Node(Box::from_raw(p)));
             },
         }
     }
 
     pub fn free_on_fail(&mut self, m: Mem<K, V>) {
         match m {
-            Mem::Child(ptr) => unsafe {
-                self.newer.push(OwnedMem::Child(Box::from_raw(ptr)));
+            Mem::Child(p) => unsafe {
+                self.newer.push(OwnedMem::Child(Box::from_raw(p)));
             },
-            Mem::Node(ptr) => unsafe {
-                self.newer.push(OwnedMem::Node(Box::from_raw(ptr)));
+            Mem::Node(p) => unsafe {
+                self.newer.push(OwnedMem::Node(Box::from_raw(p)));
             },
         }
     }
@@ -276,8 +276,7 @@ impl<K, V> Cas<K, V> {
             let r = {
                 let mut r = self.alloc_reclaim();
                 r.epoch = Some(epoch.load(SeqCst));
-                r.items.clear();
-                r.items.extend(self.older.drain(..)); // TODO: can we do memcpy ?
+                r.drain_items_from(&mut self.older);
                 r
             };
             self.reclaims.push(r);
@@ -371,6 +370,19 @@ impl<K, V> Default for Reclaim<K, V> {
             epoch: None,
             items: Vec::with_capacity(2),
         }
+    }
+}
+
+impl<K, V> Reclaim<K, V> {
+    fn drain_items_from(&mut self, items: &mut Vec<OwnedMem<K, V>>) {
+        debug_assert!(self.items.len() == 0, "reclaim items {}", self.items.len());
+
+        self.items.reserve_exact(items.len());
+        unsafe {
+            self.items.set_len(items.len());
+            ptr::copy(items.as_ptr(), self.items.as_mut_ptr(), items.len());
+            items.set_len(0);
+        };
     }
 }
 
