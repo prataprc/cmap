@@ -102,7 +102,7 @@ fn test_map() {
     let n_threads = 16; // TODO
     let modul = key_max / n_threads;
 
-    let mut map: Map<Ky, u64> = Map::new();
+    let mut map: Map<Ky, u64> = Map::new(n_threads as usize + 1);
     map.print_sizing();
 
     let mut handles = vec![];

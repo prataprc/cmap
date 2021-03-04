@@ -22,7 +22,7 @@ fn test_dash_map() {
     let n_threads = 16;
     let modul = key_max / n_threads;
 
-    let mut map: Map<Ky, u64> = Map::new();
+    let mut map: Map<Ky, u64> = Map::new(n_threads as usize + 1);
     map.print_sizing();
     let dmap: Arc<DashMap<Ky, u64>> = Arc::new(DashMap::new());
 

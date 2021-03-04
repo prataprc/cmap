@@ -37,7 +37,7 @@ fn main() {
     #[cfg(feature = "pprof")]
     let guard = pprof::ProfilerGuard::new(100000).unwrap();
 
-    let mut map: Map<Ky, u64> = Map::new();
+    let mut map: Map<Ky, u64> = Map::new(opts.threads + 1);
     map.print_sizing();
 
     // initial load
