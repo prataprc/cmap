@@ -34,5 +34,5 @@ arbitrary = { version = "0.4.7", features = ["derive"] }
 dashmap = { version = "4.0.2"}
 
 [features]
-perf = ["structopt", "rand", "dashmap", "pprof"]
+perf = ["structopt", "rand", "dashmap"]
 

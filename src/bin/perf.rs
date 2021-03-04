@@ -1,7 +1,7 @@
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
-use std::{fs, thread, time};
+use std::{thread, time};
 
 use cmap::Map;
 
@@ -34,6 +34,7 @@ fn main() {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
+    #[cfg(feature = "pprof")]
     let guard = pprof::ProfilerGuard::new(100000).unwrap();
 
     let mut map: Map<Ky, u64> = Map::new();
@@ -60,8 +61,9 @@ fn main() {
         handle.join().unwrap()
     }
 
+    #[cfg(feature = "pprof")]
     if let Ok(report) = guard.report().build() {
-        let file = fs::File::create("flamegraph.svg").unwrap();
+        let file = std::fs::File::create("flamegraph.svg").unwrap();
         report.flamegraph(file).unwrap();
     };
 
