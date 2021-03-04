@@ -61,6 +61,7 @@ macro_rules! generate_op {
 // TODO: compact() logic
 //   * Compact trie-childs to capacity == length.
 //   * Compact list-items to capacity == length.
+// TODO: n_compacts and n_retries accounting in test/dev mode.
 
 type RGuard<'a> = sync::RwLockReadGuard<'a, Vec<Arc<AtomicU64>>>;
 
@@ -71,8 +72,6 @@ pub struct Map<K, V> {
     epoch: Arc<AtomicU64>,
     access_log: Arc<RwLock<Vec<Arc<AtomicU64>>>>,
     cas: gc::Cas<K, V>,
-    n_compacts: Arc<AtomicUsize>,
-    n_retries: Arc<AtomicUsize>,
     n_pools: Arc<AtomicUsize>,
     n_allocs: Arc<AtomicUsize>,
     n_frees: Arc<AtomicUsize>,
@@ -225,8 +224,6 @@ where
             epoch: Arc::new(AtomicU64::new(1)),
             access_log,
             cas,
-            n_compacts: Arc::new(AtomicUsize::new(0)),
-            n_retries: Arc::new(AtomicUsize::new(0)),
             n_pools: Arc::new(AtomicUsize::new(0)),
             n_allocs: Arc::new(AtomicUsize::new(0)),
             n_frees: Arc::new(AtomicUsize::new(0)),
@@ -246,8 +243,6 @@ where
             epoch: Arc::clone(&self.epoch),
             access_log: Arc::clone(&self.access_log),
             cas: gc::Cas::new(),
-            n_compacts: Arc::clone(&self.n_compacts),
-            n_retries: Arc::clone(&self.n_retries),
             n_pools: Arc::clone(&self.n_pools),
             n_allocs: Arc::clone(&self.n_allocs),
             n_frees: Arc::clone(&self.n_frees),
@@ -263,8 +258,6 @@ where
         let _guard = self.access_log.write().expect("lock-panic");
 
         let mut stats = unsafe { self.root.load(SeqCst).as_ref().unwrap().validate(0) };
-        stats.n_compacts = self.n_compacts.load(SeqCst);
-        stats.n_retries = self.n_retries.load(SeqCst);
         stats.n_pools = self.n_pools.load(SeqCst) + self.cas.to_pools_len();
         stats.n_allocs = self.n_allocs.load(SeqCst) + self.cas.to_alloc_count();
         stats.n_frees = self.n_frees.load(SeqCst) + self.cas.to_free_count();
@@ -333,9 +326,7 @@ impl<K, V> Map<K, V> {
         let epoch = {
             let at = Arc::clone(&access_log[self.id]);
             let epoch = Arc::clone(&self.epoch);
-            let n_compacts = Arc::clone(&self.n_compacts);
-            let n_retries = Arc::clone(&self.n_retries);
-            Epoch::new(epoch, at, n_compacts, n_retries)
+            Epoch::new(epoch, at)
         };
 
         epoch
@@ -1116,14 +1107,10 @@ where
         K: PartialEq + Hash,
     {
         let access_log = self.access_log.read().expect("fail-lock");
-        let epocher = self.generate_epoch(&access_log);
+        let _epocher = self.generate_epoch(&access_log);
 
-        let mut retries = 0;
         let ws = slots(key_to_hash32(&key));
         let res = 'retry: loop {
-            retries += 1;
-            epocher.count_retries(retries);
-
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
 
             let mut wss = &ws[..];
@@ -1247,14 +1234,10 @@ where
         Q: PartialEq + Hash + ?Sized,
     {
         let access_log = self.access_log.read().expect("fail-lock");
-        let epocher = self.generate_epoch(&access_log);
+        let _epocher = self.generate_epoch(&access_log);
 
-        let mut retries = 0;
         let ws = slots(key_to_hash32(key));
         let (compact, res) = 'retry: loop {
-            retries += 1;
-            epocher.count_retries(retries);
-
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
 
             let mut wss = &ws[..];
@@ -1333,19 +1316,13 @@ where
         Q: Hash + ?Sized,
     {
         let _access_log = self.access_log.read().expect("fail-lock");
-        let epocher = self.generate_epoch(&_access_log);
+        let _epocher = self.generate_epoch(&_access_log);
 
-        epocher.count_compacts();
-
-        let mut retries = 0;
         let ws = slots(key_to_hash32(key));
         'retry: loop {
-            retries += 1;
-            epocher.count_retries(retries);
-
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
-            //format_ws!("do_compact try {:?} retries:{}", wss);
+            //format_ws!("do_compact try {:?}", wss);
 
             let mut depth = 0;
             loop {
@@ -1568,8 +1545,6 @@ pub struct Stats {
     pub n_items: usize,
     pub n_tombs: usize,
     pub n_lists: usize,
-    pub n_compacts: usize,
-    pub n_retries: usize,
     pub n_pools: usize,
     pub n_allocs: usize,
     pub n_frees: usize,
@@ -1586,8 +1561,6 @@ impl Add for Stats {
             n_items: self.n_items + rhs.n_items,
             n_tombs: self.n_tombs + rhs.n_tombs,
             n_lists: self.n_lists + rhs.n_lists,
-            n_compacts: self.n_compacts + rhs.n_compacts,
-            n_retries: self.n_retries + rhs.n_retries,
             n_pools: self.n_pools + rhs.n_pools,
             n_allocs: self.n_allocs + rhs.n_allocs,
             n_frees: self.n_frees + rhs.n_frees,

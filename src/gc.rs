@@ -1,7 +1,7 @@
 use std::{
     fmt, ptr, result,
     sync::{
-        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
         Arc,
     },
 };
@@ -18,37 +18,12 @@ pub const MAX_POOL_SIZE: usize = 1024;
 pub struct Epoch {
     epoch: Arc<AtomicU64>,
     at: Arc<AtomicU64>,
-    n_compacts: Arc<AtomicUsize>,
-    n_retries: Arc<AtomicUsize>,
 }
 
 impl Epoch {
-    pub fn new(
-        epoch: Arc<AtomicU64>,
-        at: Arc<AtomicU64>,
-        n_compacts: Arc<AtomicUsize>,
-        n_retries: Arc<AtomicUsize>,
-    ) -> Epoch {
+    pub fn new(epoch: Arc<AtomicU64>, at: Arc<AtomicU64>) -> Epoch {
         at.store(epoch.load(SeqCst) | ENTER_MASK, SeqCst);
-        Epoch {
-            epoch,
-            at,
-            n_compacts,
-            n_retries,
-        }
-    }
-
-    pub fn count_retries(&self, retries: usize) {
-        match retries {
-            0 | 1 => (),
-            _ => {
-                self.n_retries.fetch_add(1, SeqCst);
-            }
-        }
-    }
-
-    pub fn count_compacts(&self) {
-        self.n_compacts.fetch_add(1, SeqCst);
+        Epoch { epoch, at }
     }
 }
 
