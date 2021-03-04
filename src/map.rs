@@ -12,9 +12,11 @@ use std::{
     thread, time,
 };
 
-use crate::gc::{self, Cas, Epoch};
+use crate::gc::{self, Cas};
 
 const SLOT_MASK: u32 = 0xF;
+const ENTER_MASK: u64 = 0x8000000000000000;
+const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
 
 #[allow(unused_macros)]
 macro_rules! format_ws {
@@ -28,14 +30,16 @@ macro_rules! format_ws {
 }
 
 macro_rules! gc_epoch {
-    ($log:expr, $epoch:expr) => {{
+    ($log:expr, $seqno:expr) => {{
         let mut gc_epoch = u64::MAX;
         for e in $log.iter() {
             let thread_epoch = e.load(SeqCst);
-            let thread_epoch = if thread_epoch & gc::ENTER_MASK == 0 {
-                $epoch
+            let thread_epoch = if thread_epoch == 0 {
+                gc_epoch
+            } else if thread_epoch & ENTER_MASK == 0 {
+                $seqno
             } else {
-                thread_epoch & gc::EPOCH_MASK
+                thread_epoch & EPOCH_MASK
             };
             gc_epoch = u64::min(gc_epoch, thread_epoch);
         }
@@ -180,16 +184,16 @@ impl<K, V> Drop for Map<K, V> {
             access_log[self.id].store(0, SeqCst);
         }
         while self.cas.has_reclaims() {
-            let epoch = self.epoch.load(SeqCst);
-            let gc_epoch = {
+            let seqno = self.epoch.load(SeqCst);
+            let seqno = {
                 let access_log = self.access_log.read().expect("fail-lock");
-                gc_epoch!(access_log, epoch)
+                gc_epoch!(access_log, seqno)
             };
-            if gc_epoch == 0 || gc_epoch == u64::MAX {
+            if seqno == u64::MAX {
                 // force collect, either all clones have been dropped or there was none.
                 self.cas.garbage_collect(u64::MAX)
             } else {
-                self.cas.garbage_collect(gc_epoch)
+                self.cas.garbage_collect(seqno)
             }
             thread::sleep(time::Duration::from_millis(10)); // TODO exponential backoff
         }
@@ -318,18 +322,6 @@ where
         println!("size of chil {:4}", mem::size_of::<Child<K, V>>());
         println!("size of item {:4}", mem::size_of::<Item<K, V>>());
         println!("size of inod {:4}", mem::size_of::<In<K, V>>());
-    }
-}
-
-impl<K, V> Map<K, V> {
-    fn generate_epoch(&self, access_log: &RGuard) -> Epoch {
-        let epoch = {
-            let at = Arc::clone(&access_log[self.id]);
-            let epoch = Arc::clone(&self.epoch);
-            Epoch::new(epoch, at)
-        };
-
-        epoch
     }
 }
 
@@ -1022,26 +1014,9 @@ where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
     {
-        let epoch = self.epoch.load(SeqCst);
-        let (gc_epoch, res) = {
-            let (access_log, res) = self.do_get(key);
-            (gc_epoch!(access_log, epoch), res)
-        };
-
-        if gc_epoch < u64::MAX {
-            self.cas.garbage_collect(gc_epoch)
-        }
-
-        res
-    }
-
-    fn do_get<Q>(&mut self, key: &Q) -> (RGuard, Option<V>)
-    where
-        K: Borrow<Q>,
-        Q: PartialEq + Hash + ?Sized,
-    {
         let access_log = self.access_log.read().expect("fail-lock");
-        let _epocher = self.generate_epoch(&access_log);
+        let seqno = self.epoch.load(SeqCst);
+        access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
         let ws = slots(key_to_hash32(key));
         let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
@@ -1084,30 +1059,32 @@ where
                 Node::Tomb { .. } => break None,
             }
         };
-        (access_log, res)
+
+        access_log[self.id].store(seqno, SeqCst);
+        res
     }
 
     pub fn set(&mut self, key: K, value: V) -> Option<V>
     where
         K: PartialEq + Hash,
     {
-        let epoch = self.epoch.load(SeqCst);
-        let (gc_epoch, res) = {
-            let (access_log, res) = self.do_set(key, value);
-            (gc_epoch!(access_log, epoch), res)
+        let (seqno, res) = {
+            let (access_log, seqno, res) = self.do_set(key, value);
+            (gc_epoch!(access_log, seqno), res)
         };
-        if gc_epoch < u64::MAX {
-            self.cas.garbage_collect(gc_epoch)
+        if seqno < u64::MAX {
+            self.cas.garbage_collect(seqno)
         }
         res
     }
 
-    fn do_set(&mut self, key: K, value: V) -> (RGuard, Option<V>)
+    fn do_set(&mut self, key: K, value: V) -> (RGuard, u64, Option<V>)
     where
         K: PartialEq + Hash,
     {
         let access_log = self.access_log.read().expect("fail-lock");
-        let _epocher = self.generate_epoch(&access_log);
+        let seqno = self.epoch.load(SeqCst);
+        access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
         let ws = slots(key_to_hash32(&key));
         let res = 'retry: loop {
@@ -1206,7 +1183,11 @@ where
                 }
             }
         };
-        (access_log, res)
+
+        access_log[self.id].store(seqno, SeqCst);
+        self.epoch.fetch_add(1, SeqCst);
+
+        (access_log, seqno, res)
     }
 
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
@@ -1214,27 +1195,27 @@ where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
     {
-        let epoch = self.epoch.load(SeqCst);
-        let (gc_epoch, mut compact, res) = {
-            let (access_log, compact, res) = self.do_remove(key);
-            (gc_epoch!(access_log, epoch), compact, res)
+        let (seqno, mut compact, res) = {
+            let (access_log, seqno, compact, res) = self.do_remove(key);
+            (gc_epoch!(access_log, seqno), compact, res)
         };
         while compact {
             compact = self.do_compact(key)
         }
-        if gc_epoch < u64::MAX {
-            self.cas.garbage_collect(gc_epoch)
+        if seqno < u64::MAX {
+            self.cas.garbage_collect(seqno)
         }
         res
     }
 
-    fn do_remove<Q>(&mut self, key: &Q) -> (RGuard, bool, Option<V>)
+    fn do_remove<Q>(&mut self, key: &Q) -> (RGuard, u64, bool, Option<V>)
     where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
     {
         let access_log = self.access_log.read().expect("fail-lock");
-        let _epocher = self.generate_epoch(&access_log);
+        let seqno = self.epoch.load(SeqCst);
+        access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
         let ws = slots(key_to_hash32(key));
         let (compact, res) = 'retry: loop {
@@ -1307,7 +1288,10 @@ where
             }
         };
 
-        (access_log, compact, res)
+        access_log[self.id].store(seqno, SeqCst);
+        self.epoch.fetch_add(1, SeqCst);
+
+        (access_log, seqno, compact, res)
     }
 
     fn do_compact<Q>(&mut self, key: &Q) -> bool
@@ -1315,11 +1299,12 @@ where
         K: Borrow<Q>,
         Q: Hash + ?Sized,
     {
-        let _access_log = self.access_log.read().expect("fail-lock");
-        let _epocher = self.generate_epoch(&_access_log);
+        let access_log = self.access_log.read().expect("fail-lock");
+        let seqno = self.epoch.load(SeqCst);
+        access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
         let ws = slots(key_to_hash32(key));
-        'retry: loop {
+        let compact = 'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
             //format_ws!("do_compact try {:?}", wss);
@@ -1406,7 +1391,12 @@ where
                     _ => break 'retry false,
                 }
             }
-        }
+        };
+
+        access_log[self.id].store(seqno, SeqCst);
+        self.epoch.fetch_add(1, SeqCst);
+
+        compact
     }
 
     pub fn len(&self) -> usize {

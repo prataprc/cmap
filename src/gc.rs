@@ -9,30 +9,9 @@ use std::{
 use crate::{map::Child, map::Item, map::Node};
 
 // pub const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(10);
-pub const ENTER_MASK: u64 = 0x8000000000000000;
-pub const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
 pub const MAX_POOL_SIZE: usize = 1024;
 
 // CAS operation
-
-pub struct Epoch {
-    epoch: Arc<AtomicU64>,
-    at: Arc<AtomicU64>,
-}
-
-impl Epoch {
-    pub fn new(epoch: Arc<AtomicU64>, at: Arc<AtomicU64>) -> Epoch {
-        at.store(epoch.load(SeqCst) | ENTER_MASK, SeqCst);
-        Epoch { epoch, at }
-    }
-}
-
-impl Drop for Epoch {
-    fn drop(&mut self) {
-        self.at.store(self.epoch.load(SeqCst), SeqCst);
-        self.epoch.fetch_add(1, SeqCst);
-    }
-}
 
 pub struct Cas<K, V> {
     reclaims: Vec<Box<Reclaim<K, V>>>,
