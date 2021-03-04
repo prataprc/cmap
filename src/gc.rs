@@ -280,10 +280,10 @@ impl<K, V> Cas<K, V> {
                 r
             };
             self.reclaims.push(r);
-            self.newer.drain(..).for_each(|m| m.leak());
+            unsafe { self.newer.set_len(0) }; // leak newer values.
             true
         } else {
-            self.older.drain(..).for_each(|om| om.leak());
+            unsafe { self.older.set_len(0) }; // leak older values.
             while let Some(om) = self.newer.pop() {
                 match om {
                     OwnedMem::Child(val) => self.free_child(val),
@@ -400,20 +400,5 @@ enum OwnedMem<K, V> {
 impl<K, V> Default for OwnedMem<K, V> {
     fn default() -> Self {
         OwnedMem::None
-    }
-}
-
-impl<K, V> OwnedMem<K, V> {
-    #[inline]
-    fn leak(self) {
-        match self {
-            OwnedMem::Child(val) => {
-                Box::leak(val);
-            }
-            OwnedMem::Node(val) => {
-                Box::leak(val);
-            }
-            OwnedMem::None => (),
-        }
     }
 }
