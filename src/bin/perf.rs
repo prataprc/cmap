@@ -75,8 +75,9 @@ fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64>) {
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
+    let key_max = (opts.loads + opts.sets) as Ky;
     while (sets + rems + gets) > 0 {
-        let key = rng.gen::<Ky>();
+        let key = rng.gen::<Ky>() % key_max;
 
         let op = rng.gen::<usize>() % (sets + rems + gets);
         if op < sets {
