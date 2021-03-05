@@ -1597,6 +1597,9 @@ impl Add for Stats {
 }
 
 #[cfg(test)]
+#[path = "arr_test.rs"]
+mod arr_test;
+#[cfg(test)]
 #[path = "dash_test.rs"]
 mod dash_test;
 #[cfg(test)]

@@ -11,12 +11,16 @@ type Ky = u32;
 #[test]
 fn test_dash_map() {
     let seed: u128 = random();
-    // let seed: u128 = 108608880608704922882102056739567863183;
-    println!("test_map seed {}", seed);
+    // let seed: u128 = 114474774555146480506885522408182975209;
+    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let key_max = 100_000; // Ky::MAX;
-    let n_ops = 1_000_000; // TODO
-    let n_threads = 16; // TODO
+    let key_max = [1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
+
+    println!("test_map seed:{} key_max:{}", seed, key_max);
+
+    let n_ops = 1_000_000;
+    let n_threads = 16;
+    let modul = key_max / n_threads;
 
     let mut map: Map<Ky, u64> = Map::new();
     map.print_sizing();
@@ -27,7 +31,7 @@ fn test_dash_map() {
         let seed = seed + ((id as u128) * 100);
 
         let (map, dmap) = (map.cloned(), Arc::clone(&dmap));
-        let h = thread::spawn(move || with_dashmap(id, seed, n_ops, map, dmap));
+        let h = thread::spawn(move || with_dashmap(id, seed, modul, n_ops, map, dmap));
 
         handles.push(h);
     }
@@ -54,6 +58,7 @@ fn test_dash_map() {
 fn with_dashmap(
     id: Ky,
     seed: u128,
+    modul: Ky,
     n_ops: usize,
     mut map: Map<Ky, u64>,
     dmap: Arc<DashMap<Ky, u64>>,
@@ -67,7 +72,7 @@ fn with_dashmap(
         let mut uns = Unstructured::new(&bytes);
 
         let mut op: Op = uns.arbitrary().unwrap();
-        op = op.adjust_key(id);
+        op = op.adjust_key(id, modul);
         // println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
@@ -126,7 +131,20 @@ enum Op {
 }
 
 impl Op {
-    fn adjust_key(self, id: Ky) -> Self {
-        self
+    fn adjust_key(self, id: Ky, modul: Ky) -> Self {
+        match self {
+            Op::Get(key) => {
+                let key = (id * modul) + (key % modul);
+                Op::Get(key)
+            }
+            Op::Set(key, value) => {
+                let key = (id * modul) + (key % modul);
+                Op::Set(key, value)
+            }
+            Op::Remove(key) => {
+                let key = (id * modul) + (key % modul);
+                Op::Remove(key)
+            }
+        }
     }
 }

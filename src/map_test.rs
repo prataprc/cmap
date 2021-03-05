@@ -12,19 +12,19 @@ fn test_list_operation() {
     let mut items: Vec<Item<Ky, u64>> = vec![
         Item {
             key: 20,
-            value: Some(200),
+            value: 200,
         },
         Item {
             key: 10,
-            value: Some(100),
+            value: 100,
         },
         Item {
             key: 50,
-            value: Some(500),
+            value: 500,
         },
         Item {
             key: 30,
-            value: Some(300),
+            value: 300,
         },
     ];
 
@@ -42,23 +42,23 @@ fn test_list_operation() {
         vec![
             Item {
                 key: 20,
-                value: Some(200),
+                value: 200,
             },
             Item {
                 key: 10,
-                value: Some(10000),
+                value: 10000,
             },
             Item {
                 key: 50,
-                value: Some(500),
+                value: 500,
             },
             Item {
                 key: 30,
-                value: Some(300),
+                value: 300,
             },
             Item {
                 key: 60,
-                value: Some(600),
+                value: 600,
             },
         ]
     );
@@ -67,27 +67,23 @@ fn test_list_operation() {
 #[test]
 fn test_hamming_distance() {
     let bmp = 0xaaaa;
-    for w in 0..=255 {
-        let o = ((w % 128) / 2) as usize;
+    for w in 0..16 {
         let dist = hamming_distance(w, bmp.clone());
+        let o = ((w % 16) / 2) as usize;
         match w % 2 {
-            0 if w < 128 => assert_eq!(dist, Distance::Insert(o)),
-            0 => assert_eq!(dist, Distance::Insert(64 + o)),
-            1 if w < 128 => assert_eq!(dist, Distance::Set(o)),
-            1 => assert_eq!(dist, Distance::Set(64 + o)),
+            0 => assert_eq!(dist, Distance::Insert(o)),
+            1 => assert_eq!(dist, Distance::Set(o)),
             _ => unreachable!(),
         }
     }
 
     let bmp = 0x5555;
-    for w in 0..=255 {
-        let o = ((w % 128) / 2) as usize;
+    for w in 0..16 {
+        let o = ((w % 16) / 2) as usize;
         let dist = hamming_distance(w, bmp.clone());
         match w % 2 {
-            0 if w < 128 => assert_eq!(dist, Distance::Set(o)),
-            0 => assert_eq!(dist, Distance::Set(64 + o)),
-            1 if w < 128 => assert_eq!(dist, Distance::Insert(o + 1)),
-            1 => assert_eq!(dist, Distance::Insert(64 + o + 1)),
+            0 => assert_eq!(dist, Distance::Set(o)),
+            1 => assert_eq!(dist, Distance::Insert(o + 1)),
             _ => unreachable!(),
         }
     }
@@ -96,10 +92,12 @@ fn test_hamming_distance() {
 #[test]
 fn test_map() {
     let seed: u128 = random();
-    // let seed: u128 = 108608880608704922882102056739567863183;
-    println!("test_map seed {}", seed);
+    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let key_max = 1024 * 1024 * 1024; // Ky::MAX;
+    let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
+
+    println!("test_map seed:{} key_max:{}", seed, key_max);
+
     let n_ops = 10_000_000; // TODO
     let n_threads = 16; // TODO
     let modul = key_max / n_threads;
@@ -218,7 +216,7 @@ impl Op {
         match self {
             Op::Get(key) => {
                 let key = (id * modul) + (key % modul);
-                Op::Get((id * modul) + (key % modul))
+                Op::Get(key)
             }
             Op::Set(key, value) => {
                 let key = (id * modul) + (key % modul);
