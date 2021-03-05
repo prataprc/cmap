@@ -19,7 +19,7 @@ fn test_arr_map() {
     let n_threads = 16; // TODO
     let modul = key_max / n_threads;
 
-    let mut map: Map<u32, u32> = Map::new();
+    let mut map: Map<u32, u32> = Map::new(n_threads as usize + 1);
     map.print_sizing();
 
     let mut handles = vec![];
