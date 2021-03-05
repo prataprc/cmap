@@ -1,7 +1,7 @@
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
-use std::{thread, time};
+use std::{mem, thread, time};
 
 use cmap::Map;
 
@@ -43,7 +43,8 @@ fn main() {
     // initial load
     let start = time::Instant::now();
     for _i in 0..opts.loads {
-        let (key, val): (Ky, u64) = (rng.gen(), rng.gen());
+        let key = rng.gen::<Ky>() % (opts.loads as Ky);
+        let val: u64 = rng.gen();
         map.set(key, val);
     }
 
@@ -68,6 +69,8 @@ fn main() {
     };
 
     println!("{:?}", map.validate());
+
+    mem::drop(map)
 }
 
 fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64>) {
