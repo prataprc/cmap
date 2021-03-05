@@ -12,12 +12,14 @@ fn test_arr_map() {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let key_max = [1024 * 1024 * 1024, u32::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
-
-    println!("test_map seed:{} key_max:{}", seed, key_max);
-
-    let n_ops = 10_000_000; // TODO
-    let n_threads = 16; // TODO
+    let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
+    let n_threads = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
     let modul = key_max / n_threads;
+
+    println!(
+        "test_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
+        seed, key_max, n_ops, n_threads, modul
+    );
 
     let mut map: Map<u32, u32> = Map::new(n_threads as usize + 1);
     map.print_sizing();

@@ -14,13 +14,15 @@ fn test_dash_map() {
     // let seed: u128 = 114474774555146480506885522408182975209;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let key_max = [1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
-
-    println!("test_map seed:{} key_max:{}", seed, key_max);
-
-    let n_ops = 1_000_000;
-    let n_threads = 16;
+    let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
+    let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
+    let n_threads = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
     let modul = key_max / n_threads;
+
+    println!(
+        "test_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
+        seed, key_max, n_ops, n_threads, modul
+    );
 
     let mut map: Map<Ky, u64> = Map::new(n_threads as usize + 1);
     map.print_sizing();

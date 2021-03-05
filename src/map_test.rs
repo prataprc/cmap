@@ -92,15 +92,18 @@ fn test_hamming_distance() {
 #[test]
 fn test_map() {
     let seed: u128 = random();
-    // let seed: u128 = 249772478145194045582695899901987599338;
+    // let seed: u128 = 278311246134943876037168975111036912424;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+
     let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
-
-    println!("test_map seed:{} key_max:{}", seed, key_max);
-
-    let n_ops = 10_000_000; // TODO
-    let n_threads = 16; // TODO
+    let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
+    let n_threads = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
     let modul = key_max / n_threads;
+
+    println!(
+        "test_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
+        seed, key_max, n_ops, n_threads, modul
+    );
 
     let mut map: Map<Ky, u64> = Map::new(n_threads as usize + 1);
     map.print_sizing();
@@ -125,8 +128,9 @@ fn test_map() {
         assert_eq!(map.get(key), Some(val.clone()), "for key {}", key);
     }
 
-    println!("len {}", map.len());
-    assert_eq!(map.len(), btmap.len());
+    let ln = map.len();
+    println!("len {}", ln);
+    assert_eq!(ln, btmap.len());
     println!("Validate .... {:?}", map.validate());
 
     // map.print();
