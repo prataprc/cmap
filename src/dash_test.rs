@@ -16,7 +16,10 @@ fn test_dash_map() {
 
     let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
     let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
-    let n_threads = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
+    let n_threads = {
+        let n = [1, 2, 4, 8, 16, 32, 64, 1024][rng.gen::<usize>() % 7];
+        cmp::min(key_max, n)
+    };
     let modul = key_max / n_threads;
 
     println!(

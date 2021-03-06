@@ -1,7 +1,7 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 
-use std::{collections::BTreeMap, mem, thread};
+use std::{cmp, collections::BTreeMap, mem, thread};
 
 use super::*;
 
@@ -91,13 +91,16 @@ fn test_hamming_distance() {
 
 #[test]
 fn test_map() {
-    let seed: u128 = random();
-    // let seed: u128 = 278311246134943876037168975111036912424;
+    let seed: u128 = [93808280188270876915817886943766741423, random()][random::<usize>() % 2];
+    // let seed: u128 = 93808280188270876915817886943766741423;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
     let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
-    let n_threads = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
+    let n_threads = {
+        let n = [1, 2, 4, 8, 16, 32, 64, 1024][rng.gen::<usize>() % 7];
+        cmp::min(key_max, n)
+    };
     let modul = key_max / n_threads;
 
     println!(
@@ -165,7 +168,7 @@ fn with_btreemap(
                 let map_val = map.set(key, value);
                 let btmap_val = btmap.insert(key, value);
                 if map_val != btmap_val {
-                    map.print();
+                    // map.print();
                 }
 
                 counts[0][0] += 1;
@@ -179,7 +182,7 @@ fn with_btreemap(
                 let map_val = map.remove(&key);
                 let btmap_val = btmap.remove(&key);
                 if map_val != btmap_val {
-                    map.print();
+                    // map.print();
                 }
 
                 counts[1][0] += 1;
@@ -193,7 +196,7 @@ fn with_btreemap(
                 let map_val = map.get(&key);
                 let btmap_val = btmap.get(&key).cloned();
                 if map_val != btmap_val {
-                    map.print();
+                    // map.print();
                 }
 
                 counts[2][0] += 1;
