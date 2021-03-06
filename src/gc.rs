@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use crate::{map::Child, map::Item, map::Node};
+use crate::{map::Child, map::Node};
 
 // pub const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(10);
 pub const MAX_POOL_SIZE: usize = 1024;
@@ -82,6 +82,8 @@ impl<K, V> Cas<K, V> {
             + self.node_list_pool.len()
             + self.node_tomb_pool.len()
             + self.reclaim_pool.len()
+            + self.reclaims.len()
+            + self.reclaims.iter().map(|r| r.items.len()).sum::<usize>()
     }
 
     pub fn to_alloc_count(&self) -> usize {
@@ -147,9 +149,7 @@ impl<K, V> Cas<K, V> {
                 Some(val) => val,
                 None => {
                     self.n_allocs += 1;
-                    Box::new(Node::Tomb {
-                        item: Item::default(),
-                    })
+                    Box::new(Node::Tomb { item: None })
                 }
             },
             _ => unreachable!(),
