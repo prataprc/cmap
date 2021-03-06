@@ -2,7 +2,7 @@ use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use dashmap::DashMap;
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 
-use std::{mem, thread};
+use std::{cmp, mem, thread};
 
 use super::*;
 

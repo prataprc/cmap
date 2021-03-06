@@ -58,6 +58,8 @@ macro_rules! generate_op {
     };
 }
 
+// TODO: implement shrink_to_fit for memory optimization.
+// TODO: can we fuse In{} into Child, that is Child already acts as inter-mediate node.
 // TODO: atomic-ordering replace SeqCst with Acquire/Release.
 // TODO: Rename set() API to insert() API.
 // TODO: stats() method
@@ -69,7 +71,6 @@ macro_rules! generate_op {
 // TODO: Replace AtomicPtr<Child> with Box<Child> in Node::Trie.
 //    This will save atomic load operation and iterative copy
 //    can be replaced by memcpy.
-// TODO: optimize compact_reset(), inverse of hamming_distance.
 
 pub struct Map<K, V> {
     id: usize,
@@ -268,6 +269,7 @@ where
             .unwrap()
     }
 
+    /// call this method after all other instances have been dropped.
     pub fn validate(&self) -> Stats
     where
         K: Debug,
@@ -291,7 +293,11 @@ where
             );
         }
 
-        assert!(stats.n_tombs == 0, "unexpected tomb nodes {}", stats.n_tombs);
+        assert!(
+            stats.n_tombs == 0,
+            "unexpected tomb nodes {}",
+            stats.n_tombs
+        );
 
         stats
     }
@@ -363,13 +369,6 @@ where
         child_ptr
     }
 
-    fn is_leaf(&self) -> bool {
-        match self {
-            Child::Leaf(_) => true,
-            Child::Deep(_) => false,
-        }
-    }
-
     fn is_tomb_node(&self) -> bool {
         match self {
             Child::Leaf(_) => false,
@@ -377,19 +376,6 @@ where
                 let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
                 match node {
                     Node::Tomb { .. } => true,
-                    _ => false,
-                }
-            }
-        }
-    }
-
-    fn is_empty_trie_node(&self) -> bool {
-        match self {
-            Child::Leaf(_) => false,
-            Child::Deep(inode) => {
-                let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
-                match node {
-                    Node::Trie { childs, .. } if childs.len() == 0 => true,
                     _ => false,
                 }
             }
@@ -438,21 +424,6 @@ where
                 *bmp = *bmp & (!(1 << w));
             }
             Node::Tomb { .. } | Node::List { .. } => (),
-        }
-    }
-
-    #[inline]
-    fn compact_reset(bmp: u16, mut off: usize) -> u16 {
-        let mut mask = 0x1;
-        loop {
-            if (bmp & mask) > 0 {
-                off = match off {
-                    0 => break bmp & !mask,
-                    off => off - 1,
-                };
-            }
-            mask = mask << 1;
-            assert!(mask > 0, "compact_reset off:{} bmp:{:x}", off, bmp);
         }
     }
 
@@ -539,11 +510,11 @@ where
                     }
                 }
             }
-            Node::Tomb { item: None } => println!("{}Node::Tomb-None", prefix);,
+            Node::Tomb { item: None } => println!("{}Node::Tomb-None", prefix),
             Node::Tomb { item } => {
                 println!("{}Node::Tomb", prefix);
                 let prefix = prefix.to_string() + "  ";
-                item.unwrap().print(&prefix);
+                item.as_ref().unwrap().print(&prefix);
             }
             Node::List { items } => {
                 println!("{}Node::List", prefix);
@@ -560,6 +531,7 @@ where
 
         stats.n_mem += mem::size_of::<Node<K, V>>();
         match self {
+            Node::Tomb { .. } => unreachable!(),
             Node::Trie { childs, .. } => {
                 assert!(childs.len() <= 16);
                 stats.n_childs += childs.len();
@@ -575,10 +547,6 @@ where
                         Child::Deep(inode) => stats = stats + inode.validate(depth),
                     }
                 }
-            }
-            Node::Tomb { .. } => {
-                stats.n_tombs += 1;
-                stats.n_items += 1;
             }
             Node::List { items } => {
                 assert!(depth == 9, "depth:{}", depth);
@@ -682,7 +650,9 @@ where
     fn new_tomb(nitem: &Item<K, V>, cas: &mut Cas<K, V>) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('b');
 
-        *node = Node::Tomb { item: Some(nitem.clone()) }
+        *node = Node::Tomb {
+            item: Some(nitem.clone()),
+        };
 
         let node_ptr = Box::leak(node);
         cas.free_on_fail(gc::Mem::Node(node_ptr));
@@ -711,7 +681,7 @@ where
                 };
                 node.hamming_set(*w1);
 
-                let node_ptr = Box::leak(node)
+                let node_ptr = Box::leak(node);
                 op.cas.free_on_fail(gc::Mem::Node(node_ptr));
                 node_ptr
             }
@@ -910,7 +880,7 @@ where
         let (compact, new, ov) = match unsafe { op.old.as_ref().unwrap() } {
             Node::List { items } if items.len() == 1 => unreachable!(),
             Node::List { items } if items.len() == 2 => {
-                let (compact, j) = (true, [1, 0][n]);
+                let j = [1, 0][n];
                 let new = Node::new_tomb(&items[j], op.cas);
                 (true, new, items[n].value.clone())
             }
@@ -932,16 +902,19 @@ where
         }
     }
 
-    fn remove_child1(op: CasOp<K, V>) -> CasRc<Option<V>> {
+    fn remove_child1(n: usize, op: CasOp<K, V>) -> CasRc<()> {
         // println!("remove_child1 w:{:x} n:{}", w, n);
 
         let old_child_ptr = match unsafe { op.old.as_ref().unwrap() } {
-            Node::Trie { childs, .. } => childs[0].load(SeqCst),
+            Node::Trie { childs, .. } if childs.len() == 1 => childs[n].load(SeqCst),
             _ => unreachable!(),
         };
 
         let mut node = op.cas.alloc_node('b');
-        *node = Node::Tomb { item: None };
+        match node.as_mut() {
+            Node::Tomb { item } => *item = None,
+            _ => unreachable!(),
+        }
 
         let new = Box::leak(node);
 
@@ -949,28 +922,30 @@ where
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
         if op.cas.swing(op.epoch, &op.inode.node, op.old, new) {
-            CasRc::Ok(None)
+            CasRc::Ok(())
         } else {
             CasRc::Retry
         }
     }
 
-    fn remove_child2(m: &Item<K, V>, op: CasOp<K, V>) -> CasRc<Option<V>> {
+    fn remove_child2(m: &Item<K, V>, op: CasOp<K, V>) -> CasRc<()> {
         let mut node = op.cas.alloc_node('b');
-        *node = Node::Tomb { item: Some(m.clone()) };
+        *node = Node::Tomb {
+            item: Some(m.clone()),
+        };
 
         let new = Box::leak(node);
 
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
         if op.cas.swing(op.epoch, &op.inode.node, op.old, new) {
-            CasRc::Ok(None)
+            CasRc::Ok(())
         } else {
             CasRc::Retry
         }
     }
 
-    fn remove_child(w: u8, n: usize, op: CasOp<K, V>) -> CasRc<Option<V>> {
+    fn remove_child(w: u8, n: usize, op: CasOp<K, V>) -> CasRc<()> {
         // println!("remove_child w:{:x} n:{}", w, n);
 
         let old_child_ptr = match unsafe { op.old.as_ref().unwrap() } {
@@ -993,66 +968,76 @@ where
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
         if op.cas.swing(op.epoch, &op.inode.node, op.old, new) {
-            CasRc::Ok(None)
+            CasRc::Ok(())
         } else {
             CasRc::Retry
         }
     }
 
-    fn compact_trie_from(
-        &mut self,
-        old_bmp: u16,
-        old_childs: &[AtomicPtr<Child<K, V>>], // list to compact
-        cas: &mut Cas<K, V>,
-    ) -> bool {
-        let (bmp, childs) = match self {
-            Node::Trie { bmp, childs } => (bmp, childs),
+    fn compact_trie_from(w: u8, n: usize, depth: usize, op: CasOp<K, V>) -> (bool, CasRc<()>) {
+        let mut node = op.cas.alloc_node('t');
+        node.trie_copy_from(unsafe { op.old.as_ref().unwrap() });
+
+        match node.as_mut() {
+            Node::Trie { childs, .. } => {
+                let old_child_ptr = childs[n].load(SeqCst);
+                match unsafe { old_child_ptr.as_ref().unwrap() } {
+                    Child::Deep(next_inode) => {
+                        let next_node_ptr = next_inode.node.load(SeqCst);
+                        match unsafe { next_node_ptr.as_ref().unwrap() } {
+                            Node::Tomb { item: None } => {
+                                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                                op.cas.free_on_pass(gc::Mem::Node(next_node_ptr));
+                                childs.remove(n);
+                                node.hamming_reset(w)
+                            }
+                            Node::Tomb { item: Some(item) } => {
+                                op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
+                                op.cas.free_on_pass(gc::Mem::Node(next_node_ptr));
+                                let new_ptr = Child::new_leaf(item.clone(), op.cas);
+                                childs[n] = AtomicPtr::new(new_ptr);
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    Child::Leaf(_) => unreachable!(),
+                }
+            }
             _ => unreachable!(),
         };
 
-        *bmp = old_bmp;
-        childs.clear();
-
-        for (off, child) in old_childs.iter().enumerate() {
-            let old_child_ptr = child.load(SeqCst);
-            match unsafe { old_child_ptr.as_ref().unwrap() } {
-                Child::Leaf(_) => childs.push(AtomicPtr::new(old_child_ptr)),
-                Child::Deep(next_inode) => {
-                    let next_node_ptr = next_inode.node.load(SeqCst);
-                    match unsafe { next_node_ptr.as_ref().unwrap() } {
-                        Node::Tomb { item: None } => {
-                            cas.free_on_pass(gc::Mem::Child(old_child_ptr));
-                            cas.free_on_pass(gc::Mem::Node(next_node_ptr));
-                            *bmp = *bmp & Node::<K, V>::compact_reset(old_bmp, off);
-                        }
-                        Node::Tomb { item: Some(item) } => {
-                            cas.free_on_pass(gc::Mem::Child(old_child_ptr));
-                            cas.free_on_pass(gc::Mem::Node(next_node_ptr));
-                            let new_ptr = Child::new_leaf(item.clone(), cas);
-                            childs.push(AtomicPtr::new(new_ptr));
-                        }
-                        _ => childs.push(AtomicPtr::new(old_child_ptr)),
-                    }
-                }
-            }
-        }
-
-        match childs.len() {
-            0 => {
-                *node = Node::Tomb { item: None };
-                true
-            }
-            1 => {
-                let old_child_ptr = childs[0].load(SeqCst);
-                match unsafe { old_child_ptr.as_ref().unwrap() } {
-                Child::Leaf(m) => {
-                    cas.free_on_pass(gc::Mem::Child(old_child_ptr));
-                    *node = Node::Tomb { item: Some(m.clone()) };
+        // self compact only for non-root nodes.
+        let compact = match node.as_mut() {
+            Node::Trie { childs, .. } => match childs.len() {
+                0 if depth > 1 => {
+                    *node = Node::Tomb { item: None };
                     true
+                }
+                1 if depth > 1 => {
+                    let other_child_ptr = childs[0].load(SeqCst);
+                    match unsafe { other_child_ptr.as_ref().unwrap() } {
+                        Child::Leaf(m) => {
+                            op.cas.free_on_pass(gc::Mem::Child(other_child_ptr));
+                            let item = Some(m.clone());
+                            *node = Node::Tomb { item };
+                            true
+                        }
+                        _ => false,
+                    }
                 }
                 _ => false,
             },
-            _ => false,
+            _ => unreachable!(),
+        };
+
+        let new = Box::leak(node);
+
+        op.cas.free_on_fail(gc::Mem::Node(new));
+        op.cas.free_on_pass(gc::Mem::Node(op.old));
+        if op.cas.swing(op.epoch, &op.inode.node, op.old, new) {
+            (compact, CasRc::Ok(()))
+        } else {
+            (compact, CasRc::Retry)
         }
     }
 }
@@ -1073,7 +1058,7 @@ where
         let ws = slots(key_to_hash32(key));
         let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
         let mut wss = &ws[..];
-        // format_ws!("get outer ws:{:?}", wss);
+        // println!("{}", format_ws!("get outer ws:{:?}", wss));
 
         let res = loop {
             let old = inode.node.load(SeqCst);
@@ -1107,8 +1092,8 @@ where
                 Node::List { .. } => unreachable!(),
                 Node::Tomb { item } => match item {
                     Some(m) if m.key.borrow() == key => break Some(m.value.clone()),
-                    _ => None,
-                }
+                    _ => break None,
+                },
             }
         };
 
@@ -1144,7 +1129,7 @@ where
         let res = 'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
-            // println!("set try key:{:?} {:?}", key, format_ws!("{:?}", ws));
+            // println!("set try key:{:?} {}", key, format_ws!("{:?}", ws));
 
             loop {
                 let old: *mut Node<K, V> = inode.node.load(SeqCst);
@@ -1153,10 +1138,7 @@ where
                 let w = match wss.first() {
                     Some(w) => *w,
                     None => match node {
-                        Node::Tomb { item } => match item {
-                            Some(item) if &item.key == &key => continue 'retry;,
-                            _ => break 'retry None,
-                        }
+                        Node::Tomb { .. } => continue 'retry,
                         Node::List { .. } => {
                             let op = generate_op!(self, inode, old);
                             match Node::update_list(&key, &value, op) {
@@ -1173,7 +1155,7 @@ where
                 let n = match node {
                     Node::Trie { bmp, .. } => match hamming_distance(w, bmp.clone()) {
                         Distance::Insert(n) => {
-                            // println!("set loop bmp:{:x} {}", bmp, n);
+                            // println!("set loop insert bmp:{:x} {}", bmp, n);
                             let op = generate_op!(self, inode, old);
                             let item = (key.clone(), value.clone()).into();
                             match Node::ins_child(item, w, n, op) {
@@ -1183,10 +1165,7 @@ where
                         }
                         Distance::Set(n) => n,
                     },
-                    Node::Tomb { item } => match item {
-                        Some(item) if &item.key == &key => continue 'retry,
-                        _ => break 'retry None,
-                    }
+                    Node::Tomb { .. } => continue 'retry,
                     Node::List { .. } => unreachable!(),
                 };
                 // println!("set loop n:{}", n);
@@ -1273,7 +1252,7 @@ where
         let (compact, res) = 'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
-            // println!("remove try key:{:?} {:?}", key, format_ws!("{:?}", ws));
+            // println!("remove try key:{:?} {}", key, format_ws!("{:?}", ws));
 
             let mut depth = 0;
             loop {
@@ -1298,7 +1277,7 @@ where
                         Node::Tomb { item } => match item {
                             Some(m) if m.key.borrow() == key => continue 'retry,
                             _ => break 'retry (false, None),
-                        }
+                        },
                         Node::Trie { .. } => unreachable!(),
                     },
                 };
@@ -1317,7 +1296,7 @@ where
                     Node::Tomb { item } => match item {
                         Some(item) if item.key.borrow() == key => continue 'retry,
                         _ => break 'retry (false, None),
-                    }
+                    },
                     Node::List { .. } => unreachable!(),
                 };
                 // println!("do_remove n:{} bmp:{:x}", n, _bmp);
@@ -1326,37 +1305,55 @@ where
                 inode = match unsafe { ocp.as_ref().unwrap() } {
                     Child::Deep(next_inode) => next_inode,
                     Child::Leaf(item) if item.key.borrow() == key && depth == 1 => {
+                        // println!("remove1 old value {:?}", ov);
+
                         // avoid tombification of node, root node should always be
                         // a trie and can contain empty childs.
-                        match remove_child(w, n, op) {
+                        let op = generate_op!(self, inode, old);
+                        let ov = item.value.clone();
+                        match Node::remove_child(w, n, op) {
                             CasRc::Ok(_) => break 'retry (false, Some(ov)),
                             CasRc::Retry => continue 'retry,
                         }
                     }
                     Child::Leaf(item) if item.key.borrow() == key => {
-                        let op = generate_op!(self, inode, old);
                         let ov = item.value.clone();
                         let (compact, res) = match childs.len() {
                             0 => unreachable!(),
-                            1 => (true, Node::remove_child1(op)),
+                            1 => {
+                                // println!("remove2 old value {:?}", ov);
+
+                                let op = generate_op!(self, inode, old);
+                                assert!(n == 0, "unexpected {}", n);
+                                (true, Node::remove_child1(n, op))
+                            }
                             2 => {
+                                let op = generate_op!(self, inode, old);
+
                                 let j = [1, 0][n];
                                 let lcp = childs[j].load(SeqCst);
                                 match unsafe { lcp.as_ref().unwrap() } {
                                     Child::Leaf(m) => {
+                                        // println!("remove3 old value {:?}", ov);
+
                                         op.cas.free_on_pass(gc::Mem::Child(lcp));
                                         op.cas.free_on_pass(gc::Mem::Child(ocp));
-                                        (true, Node::remove_child2(m, op)),
+                                        (true, Node::remove_child2(m, op))
                                     }
                                     Child::Deep(_) => {
-                                        let compact = false;
-                                        (compact, Node::remove_child(w, n, op))
+                                        // println!("remove4 old value {:?}", ov);
+
+                                        (false, Node::remove_child(w, n, op))
                                     }
-                                };
-                            },
-                            _ => (false, remove_child(w, n, op)),
+                                }
+                            }
+                            _ => {
+                                let op = generate_op!(self, inode, old);
+                                (false, Node::remove_child(w, n, op))
+                            }
                         };
 
+                        // println!("remove old value {:?}", ov);
                         match (compact, res) {
                             (compact, CasRc::Ok(_)) => break 'retry (compact, Some(ov)),
                             (_, CasRc::Retry) => continue 'retry,
@@ -1385,7 +1382,12 @@ where
         'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
-            //format_ws!("do_compact try {:?}", wss);
+            //println!(
+            //    "do_compact key:{:?} {} retry:{}",
+            //    key,
+            //    format_ws!("{:?}", wss),
+            //    retry
+            //);
 
             let mut depth = 0;
             loop {
@@ -1405,51 +1407,32 @@ where
                 wss = &wss[1..];
                 // println!("do_compact w:{:x}", w);
 
-                let n = match node {
+                let (n, child) = match node {
                     Node::Tomb { .. } => continue 'retry,
-                    Node::Trie { bmp, .. } => {
+                    Node::Trie { bmp, childs } => {
                         let hd = hamming_distance(w, bmp.clone());
-                        match hd {
+                        let n = match hd {
                             Distance::Insert(_) => break 'retry,
                             Distance::Set(n) => n,
-                        }
+                        };
+                        (n, unsafe { childs[n].load(SeqCst).as_ref().unwrap() })
                     }
                     Node::List { .. } => unreachable!(),
                 };
 
-                let child = unsafe { childs[n].load(SeqCst).as_ref().unwrap() };
                 inode = match node {
-                    Node::Trie { childs, .. } if depth == 1 => {
-                        match unsafe { childs[n].load(SeqCst).as_ref().unwrap() } {
-                            Child::Leaf(_) => break 'retry,
-                            Child::Deep(inode) => inode,
-                        }
-                    }
-                    Node::Trie { bmp, childs } if c.is_tomb_node() => {
+                    Node::Trie { .. } if child.is_tomb_node() => {
                         let op = generate_op!(self, inode, old);
-
-                        let mut node = op.cas.alloc_node('t');
-                        let compact = node.compact_trie_from(*bmp, childs, op.cas);
-                        let new = Box::leak(node);
-
-                        op.cas.free_on_fail(gc::Mem::Node(new));
-                        op.cas.free_on_pass(gc::Mem::Node(old));
-                        if op.cas.swing(op.epoch, &inode.node, old, new) {
-                            match compact {
-                                true => continue 'retry,
-                                false => break 'retry,
-                            }
-                        } else {
-                            continue 'retry;
+                        match Node::compact_trie_from(w, n, depth, op) {
+                            (true, CasRc::Ok(_)) => continue 'retry,
+                            (false, CasRc::Ok(_)) => break 'retry,
+                            (_, CasRc::Retry) => continue 'retry,
                         }
                     }
-                    Node::Trie { childs, .. } if childs.len() == 0 => unreachable!(),
-                    Node::Trie { childs, .. } => {
-                        match unsafe { childs[n].load(SeqCst).as_ref().unwrap() } {
-                            Child::Leaf(_) => break 'retry,
-                            Child::Deep(inode) => inode,
-                        }
-                    }
+                    Node::Trie { .. } => match child {
+                        Child::Leaf(_) => break 'retry,
+                        Child::Deep(inode) => inode,
+                    },
                     _ => unreachable!(),
                 }
             }

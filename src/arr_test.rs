@@ -1,7 +1,7 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 
-use std::{mem, thread};
+use std::{cmp, mem, thread};
 
 use super::*;
 
@@ -11,7 +11,7 @@ fn test_arr_map() {
     // let seed: u128 = 268219686229904906077089108983355143992;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
+    let key_max = [1024 * 1024 * 1024, u32::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
     let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
     let n_threads = {
         let n = [1, 2, 4, 8, 16, 32, 64, 1024][rng.gen::<usize>() % 7];
