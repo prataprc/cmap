@@ -16,7 +16,7 @@ use crate::gc::{self, Cas};
 const SLOT_MASK: u32 = 0xF;
 const ENTER_MASK: u64 = 0x8000000000000000;
 const EPOCH_MASK: u64 = 0x7FFFFFFFFFFFFFFF;
-const GC_PERIOD: usize = 0; // TODO: tune this.
+const GC_PERIOD: usize = 16;
 
 #[allow(unused_macros)]
 macro_rules! format_ws {
@@ -58,19 +58,19 @@ macro_rules! generate_op {
     };
 }
 
-// TODO: implement shrink_to_fit for memory optimization.
-// TODO: can we fuse In{} into Child, that is Child already acts as inter-mediate node.
 // TODO: atomic-ordering replace SeqCst with Acquire/Release.
+// TODO: n_compacts and n_retries accounting in test/dev mode.
+
 // TODO: Rename set() API to insert() API.
 // TODO: stats() method
 //   * Count the number of Nodes that are tombable.
+//   * There shall be no tomb nodes.
+//   * There shall be no empty trie-nodes that is not root.
+//   * There shall be list-node with items.len() < 2.
 // TODO: compact() logic
+//   * implement shrink_to_fit for memory optimization.
 //   * Compact trie-childs to capacity == length.
 //   * Compact list-items to capacity == length.
-// TODO: n_compacts and n_retries accounting in test/dev mode.
-// TODO: Replace AtomicPtr<Child> with Box<Child> in Node::Trie.
-//    This will save atomic load operation and iterative copy
-//    can be replaced by memcpy.
 
 pub struct Map<K, V> {
     id: usize,
@@ -81,6 +81,7 @@ pub struct Map<K, V> {
     map_pool: Arc<Mutex<Vec<Map<K, V>>>>,
     cas: gc::Cas<K, V>,
     gc_period: usize,
+    gc_count: usize,
     n_pools: Arc<AtomicUsize>,
     n_allocs: Arc<AtomicUsize>,
     n_frees: Arc<AtomicUsize>,
@@ -232,6 +233,7 @@ where
             map_pool: Arc::new(Mutex::new(vec![])),
             cas,
             gc_period: GC_PERIOD,
+            gc_count: GC_PERIOD,
             n_pools: Arc::new(AtomicUsize::new(0)),
             n_allocs: Arc::new(AtomicUsize::new(0)),
             n_frees: Arc::new(AtomicUsize::new(0)),
@@ -252,13 +254,19 @@ where
                 access_log: Arc::clone(&self.access_log),
                 map_pool: Arc::clone(&self.map_pool),
                 cas: gc::Cas::new(),
-                gc_period: GC_PERIOD,
+                gc_period: self.gc_period,
+                gc_count: self.gc_count,
                 n_pools: Arc::clone(&self.n_pools),
                 n_allocs: Arc::clone(&self.n_allocs),
                 n_frees: Arc::clone(&self.n_frees),
             };
             self.map_pool.lock().expect("map lock poisoned").push(map);
         }
+    }
+
+    pub fn set_gc_period(&mut self, period: usize) -> &mut Self {
+        self.gc_period = period;
+        self
     }
 
     pub fn cloned(&self) -> Map<K, V> {
@@ -1106,14 +1114,14 @@ where
         K: PartialEq + Hash,
     {
         let (seqno, res) = self.do_set(key, value);
-        if self.gc_period == 0 {
+        if self.gc_count == 0 {
             let seqno = gc_epoch!(self.access_log, seqno);
             if seqno < u64::MAX {
                 self.cas.garbage_collect(seqno)
             }
-            self.gc_period = GC_PERIOD; // reload
+            self.gc_count = self.gc_period; // reload
         }
-        self.gc_period = self.gc_period.saturating_sub(1);
+        self.gc_count = self.gc_count.saturating_sub(1);
 
         res
     }
@@ -1228,14 +1236,14 @@ where
         if compact {
             self.do_compact(key)
         }
-        if self.gc_period == 0 {
+        if self.gc_count == 0 {
             let seqno = gc_epoch!(self.access_log, seqno);
             if seqno < u64::MAX {
                 self.cas.garbage_collect(seqno)
             }
-            self.gc_period = GC_PERIOD; // reload
+            self.gc_count = self.gc_period; // reload
         }
-        self.gc_period = self.gc_period.saturating_sub(1);
+        self.gc_count = self.gc_count.saturating_sub(1);
 
         res
     }
