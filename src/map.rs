@@ -61,12 +61,6 @@ macro_rules! generate_op {
 // TODO: atomic-ordering replace SeqCst with Acquire/Release.
 // TODO: n_compacts and n_retries accounting in test/dev mode.
 
-// TODO: Rename set() API to insert() API.
-// TODO: stats() method
-//   * Count the number of Nodes that are tombable.
-//   * There shall be no tomb nodes.
-//   * There shall be no empty trie-nodes that is not root.
-//   * There shall be list-node with items.len() < 2.
 // TODO: compact() logic
 //   * implement shrink_to_fit for memory optimization.
 //   * Compact trie-childs to capacity == length.
@@ -277,7 +271,15 @@ where
             .unwrap()
     }
 
-    /// call this method after all other instances have been dropped.
+    /// Call this method after all other concurrnet instances have been
+    /// dropped.
+    ///
+    /// * There shall be not tomb-nodes.
+    /// * There shall be no empty trie-nodes that is not root.
+    /// * There shall be no trie-nodes with childs.len() > 16.
+    /// * There shall be no list-node with items.len() < 2
+    /// * All list-nodes must be at 9th level.
+    /// * change all assert!() macro call to debug_assert!()
     pub fn validate(&self) -> Stats
     where
         K: Debug,
@@ -293,7 +295,7 @@ where
         {
             let mem_count = stats.n_allocs - stats.n_frees;
             let alg_count = stats.n_nodes + stats.n_childs + stats.n_pools;
-            assert!(
+            debug_assert!(
                 mem_count == alg_count,
                 "mem_count:{} alg_count:{}",
                 mem_count,
@@ -301,7 +303,7 @@ where
             );
         }
 
-        assert!(
+        debug_assert!(
             stats.n_tombs == 0,
             "unexpected tomb nodes {}",
             stats.n_tombs
@@ -541,7 +543,9 @@ where
         match self {
             Node::Tomb { .. } => unreachable!(),
             Node::Trie { childs, .. } => {
-                assert!(childs.len() <= 16);
+                let nc = childs.len();
+                debug_assert!(depth > 1 && nc > 0, "unexpected node.trie n:{}", nc);
+                debug_assert!(nc <= 16, "unexpected node.trie n:{}", nc);
                 stats.n_childs += childs.len();
 
                 stats.n_mem += {
@@ -557,7 +561,8 @@ where
                 }
             }
             Node::List { items } => {
-                assert!(depth == 9, "depth:{}", depth);
+                debug_assert!(items.len() > 1, "unexpected node.list n:{}", items.len());
+                debug_assert!(depth == 9, "unexpected node.list depth:{}", depth);
                 stats.n_lists += 1;
                 stats.n_items += items.len();
                 stats.n_mem += items.capacity() * mem::size_of::<Item<K, V>>();
@@ -1332,7 +1337,7 @@ where
                                 // println!("remove2 old value {:?}", ov);
 
                                 let op = generate_op!(self, inode, old);
-                                assert!(n == 0, "unexpected {}", n);
+                                debug_assert!(n == 0, "unexpected {}", n);
                                 (true, Node::remove_child1(n, op))
                             }
                             2 => {
