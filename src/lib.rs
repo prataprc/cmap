@@ -47,13 +47,28 @@
 //! Application defined hashing
 //! ===========================
 //!
+//! Parametrise [Map] type with ``H`` for application defined [BuildHasher].
+//! This allows interesting and efficient hash-generation for application
+//! specific key-set.
+//!
+//! This package define two off-the-self types implementing BuildHasher.
+//!
+//! * [U32Hasher], for applications that are going to use u32 as key type
+//!   and can guarantee unique keys (that is no collision guarantee).
+//! * [DefaultHasher], as default hasher that internally uses google's
+//!   city-hash via [fasthash][fasthash] package, this might change in future
+//!   releases.
+//!
 //! [pds]: https://en.wikipedia.org/wiki/Persistent_data_structure
 //! [ppom]: https://github.com/bnclabs/cmap
+//! [fasthash]: https://github.com/flier/rust-fasthash
 
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(destructuring_assignment)]
 
+#[allow(unused_imports)]
+use std::hash::BuildHasher;
 use std::{error, fmt, result};
 
 /// Short form to compose Error values.
@@ -104,8 +119,10 @@ macro_rules! err_at {
 
 // mod entry;
 mod gc;
+mod hasher;
 mod map;
 
+pub use hasher::{DefaultHasher, U32Hasher};
 pub use map::Map;
 
 /// Error variants that can be returned by this package's API.

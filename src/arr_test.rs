@@ -24,7 +24,10 @@ fn test_arr_map() {
         seed, key_max, n_ops, n_threads, modul
     );
 
-    let mut map: Map<u32, u32> = Map::new(n_threads as usize + 1);
+    let mut map: Map<u32, u32> = {
+        let hash_builder = DefaultHasher::new();
+        Map::new(n_threads as usize + 1, hash_builder)
+    };
     map.print_sizing();
 
     let mut handles = vec![];

@@ -1,7 +1,7 @@
 use std::{
     borrow::Borrow,
     fmt::Debug,
-    hash::{Hash, Hasher},
+    hash::{BuildHasher, Hash, Hasher},
     mem,
     ops::{Add, Deref},
     sync::{
@@ -11,7 +11,10 @@ use std::{
     thread, time,
 };
 
-use crate::gc::{self, Cas};
+use crate::{
+    gc::{self, Cas},
+    DefaultHasher,
+};
 
 const SLOT_MASK: u32 = 0xF;
 const ENTER_MASK: u64 = 0x8000000000000000;
@@ -62,16 +65,18 @@ macro_rules! generate_op {
 // TODO: n_compacts and n_retries accounting in test/dev mode.
 // TODO: maintain n_count as AtomicU64 to avoid full table walk for
 //   len() call.
-// TODO: application defined hashing.
+// TODO: Replace AtomicPtr<Child> with Box<Child> in Node::Trie
+// TODO: optimize hamming_distance with SSE or popcnt instructions.
 
 /// Map implement concurrent hash-map of key ``K`` and value ``V``.
-pub struct Map<K, V> {
+pub struct Map<K, V, H = DefaultHasher> {
     id: usize,
+    hash_builder: H,
     root: Arc<Root<K, V>>,
 
     epoch: Arc<AtomicU64>,
     access_log: Arc<Vec<AtomicU64>>,
-    map_pool: Arc<Mutex<Vec<Map<K, V>>>>,
+    map_pool: Arc<Mutex<Vec<Map<K, V, H>>>>,
     cas: gc::Cas<K, V>,
     gc_period: usize,
     gc_count: usize,
@@ -170,15 +175,16 @@ where
     }
 
     #[cfg(test)]
-    fn collisions(&self)
+    fn collisions<H>(&self, hb: &H)
     where
         K: Default + Clone + Hash,
+        H: BuildHasher,
     {
-        unsafe { self.node.load(SeqCst).as_ref().unwrap().collisions() };
+        unsafe { self.node.load(SeqCst).as_ref().unwrap().collisions(hb) };
     }
 }
 
-impl<K, V> Drop for Map<K, V> {
+impl<K, V, H> Drop for Map<K, V, H> {
     fn drop(&mut self) {
         self.access_log[self.id].store(0, SeqCst);
 
@@ -191,7 +197,7 @@ impl<K, V> Drop for Map<K, V> {
             } else {
                 self.cas.garbage_collect(seqno)
             }
-            thread::sleep(time::Duration::from_millis(10)); // TODO exponential backoff
+            thread::sleep(time::Duration::from_millis(10));
         }
         self.n_pools.fetch_add(self.cas.to_pools_len(), SeqCst);
         self.n_allocs.fetch_add(self.cas.to_alloc_count(), SeqCst);
@@ -199,10 +205,11 @@ impl<K, V> Drop for Map<K, V> {
     }
 }
 
-impl<K, V> Map<K, V>
+impl<K, V, H> Map<K, V, H>
 where
     K: 'static + Send + Default + Clone,
     V: 'static + Send + Default + Clone,
+    H: Clone,
 {
     /// Create a new instance of map. All the clones created from this map will
     /// share its internal data structure through atomic serialization.
@@ -210,7 +217,7 @@ where
     /// If application intent to use this map in single threaded mode, supply
     /// `concurrency` as 1. Otherwise supplied level of concurrency must be equal
     /// to or greater than the number of times this intance is going to be cloned.
-    pub fn new(concurrency: usize) -> Map<K, V> {
+    pub fn new(concurrency: usize, hash_builder: H) -> Map<K, V, H> {
         let mut cas = gc::Cas::new();
         let root = {
             let node = cas.alloc_node('t');
@@ -227,6 +234,7 @@ where
 
         let map = Map {
             id: 0,
+            hash_builder,
             root,
 
             epoch: Arc::new(AtomicU64::new(1)),
@@ -249,6 +257,7 @@ where
         for id in ids.into_iter() {
             let map = Map {
                 id,
+                hash_builder: self.hash_builder.clone(),
                 root: Arc::clone(&self.root),
 
                 epoch: Arc::clone(&self.epoch),
@@ -278,7 +287,7 @@ where
 
     /// Create a new clone of this map. Cloned map have seperate ownership of Map,
     /// and implement Send / Sync for thread-safety.
-    pub fn cloned(&self) -> Map<K, V> {
+    pub fn cloned(&self) -> Map<K, V, H> {
         self.map_pool
             .lock()
             .expect("map lock poisoned")
@@ -340,12 +349,19 @@ where
     where
         K: Hash + Debug,
         V: Debug,
+        H: BuildHasher,
     {
-        unsafe { self.root.load(SeqCst).as_ref().unwrap().collisions() };
+        unsafe {
+            self.root
+                .load(SeqCst)
+                .as_ref()
+                .unwrap()
+                .collisions(&self.hash_builder)
+        };
     }
 }
 
-impl<K, V> Map<K, V>
+impl<K, V, H> Map<K, V, H>
 where
     K: Default + Clone + Debug,
     V: Default + Clone + Debug,
@@ -599,23 +615,25 @@ where
     }
 
     #[cfg(test)]
-    fn collisions(&self)
+    fn collisions<H>(&self, hb: &H)
     where
         K: Hash,
+        H: BuildHasher,
     {
         match self {
             Node::Trie { childs, .. } => {
                 for child in childs {
                     match unsafe { child.load(SeqCst).as_ref().unwrap() } {
                         Child::Leaf(_) => (),
-                        Child::Deep(inode) => inode.collisions(),
+                        Child::Deep(inode) => inode.collisions(hb),
                     }
                 }
             }
             Node::Tomb { .. } => (),
             Node::List { items } => {
                 for item in items {
-                    println!("key:{:?},{}", item.key, key_to_hash32(&item.key))
+                    let hasher = hb.build_hasher();
+                    println!("key:{:?},{}", item.key, key_to_hash32(&item.key, hasher))
                 }
             }
         }
@@ -1121,10 +1139,11 @@ where
     }
 }
 
-impl<K, V> Map<K, V>
+impl<K, V, H> Map<K, V, H>
 where
     K: Default + Clone,
     V: Default + Clone,
+    H: BuildHasher,
 {
     pub fn get<Q>(&mut self, key: &Q) -> Option<V>
     where
@@ -1134,7 +1153,10 @@ where
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
-        let ws = slots(key_to_hash32(key));
+        let ws = {
+            let hasher = self.hash_builder.build_hasher();
+            slots(key_to_hash32(key, hasher))
+        };
         let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
         let mut wss = &ws[..];
         // println!("{}", format_ws!("get outer ws:{:?}", wss));
@@ -1204,7 +1226,10 @@ where
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
-        let ws = slots(key_to_hash32(&key));
+        let ws = {
+            let hasher = self.hash_builder.build_hasher();
+            slots(key_to_hash32(&key, hasher))
+        };
         let res = 'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
@@ -1274,10 +1299,14 @@ where
                         }
                     }
                     Child::Leaf(leaf) => {
-                        let mut op = generate_op!(self, inode, old);
+                        let hash_lk = {
+                            let hasher = self.hash_builder.build_hasher();
+                            key_to_hash32(&leaf.key, hasher)
+                        };
 
+                        let mut op = generate_op!(self, inode, old);
                         let mut scratch = [(0_u8, 0_u8); 8];
-                        let xs = subtrie_zip(&leaf.key, wss, &mut scratch);
+                        let xs = subtrie_zip(hash_lk, wss, &mut scratch);
                         // println!("set loop 3");
 
                         let item: Item<K, V> = (key.clone(), value.clone()).into();
@@ -1327,7 +1356,10 @@ where
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
-        let ws = slots(key_to_hash32(key));
+        let ws = {
+            let hasher = self.hash_builder.build_hasher();
+            slots(key_to_hash32(key, hasher))
+        };
         let (compact, res) = 'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
@@ -1457,7 +1489,10 @@ where
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
 
-        let ws = slots(key_to_hash32(key));
+        let ws = {
+            let hasher = self.hash_builder.build_hasher();
+            slots(key_to_hash32(key, hasher))
+        };
         'retry: loop {
             let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
             let mut wss = &ws[..];
@@ -1545,7 +1580,6 @@ fn hamming_distance(w: u8, bmp: u16) -> Distance {
     let mask: u16 = !(posn - 1);
 
     let (x, y) = ((bmp & mask), bmp);
-    // TODO: optimize it with SSE or popcnt instructions, figure-out a way.
     let dist = (x ^ y).count_ones() as usize;
 
     match bmp & posn {
@@ -1554,14 +1588,11 @@ fn hamming_distance(w: u8, bmp: u16) -> Distance {
     }
 }
 
-// TODO: Can we make this to use a generic hash function ?
-fn key_to_hash32<K>(key: &K) -> u32
+fn key_to_hash32<K, H>(key: &K, mut hasher: H) -> u32
 where
     K: Hash + ?Sized,
+    H: Hasher,
 {
-    use fasthash::city::crc;
-
-    let mut hasher = crc::Hasher128::default();
     key.hash(&mut hasher);
     let code: u64 = hasher.finish();
     (((code >> 32) ^ code) & 0xFFFFFFFF) as u32
@@ -1575,11 +1606,8 @@ fn slots(key: u32) -> [u8; 8] {
     arr
 }
 
-fn subtrie_zip<'a, K>(key: &K, wss: &[u8], out: &'a mut [(u8, u8); 8]) -> &'a [(u8, u8)]
-where
-    K: Hash + ?Sized,
-{
-    let ls = slots(key_to_hash32(key));
+fn subtrie_zip<'a>(hash: u32, wss: &[u8], out: &'a mut [(u8, u8); 8]) -> &'a [(u8, u8)] {
+    let ls = slots(hash);
     let n = wss.len();
     let off = 8 - n;
     for i in 0..n {

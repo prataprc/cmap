@@ -3,7 +3,7 @@ use structopt::StructOpt;
 
 use std::{mem, thread, time};
 
-use cmap::Map;
+use cmap::{Map, U32Hasher};
 
 // TODO: when we compile bin/perf with `pprof` feature and run it via valgrind
 //    there are memory-leaks. Is that normal ?
@@ -43,7 +43,7 @@ fn main() {
     #[cfg(feature = "pprof")]
     let guard = pprof::ProfilerGuard::new(100000).unwrap();
 
-    let mut map: Map<Ky, u64> = Map::new(opts.threads + 1);
+    let mut map: Map<Ky, u64, U32Hasher> = Map::new(opts.threads + 1, U32Hasher::new());
     map.print_sizing();
 
     // initial load
@@ -81,7 +81,7 @@ fn main() {
     mem::drop(map)
 }
 
-fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64>) {
+fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Hasher>) {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let start = time::Instant::now();

@@ -28,7 +28,10 @@ fn test_dash_map() {
         seed, key_max, n_ops, n_threads, modul
     );
 
-    let mut map: Map<Ky, u64> = Map::new(n_threads as usize + 1);
+    let mut map: Map<Ky, u64> = {
+        let hash_builder = DefaultHasher::new();
+        Map::new(n_threads as usize + 1, hash_builder)
+    };
     map.print_sizing();
     let dmap: Arc<DashMap<Ky, u64>> = Arc::new(DashMap::new());
 

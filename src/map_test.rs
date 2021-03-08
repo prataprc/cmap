@@ -109,7 +109,10 @@ fn test_map() {
         seed, key_max, n_ops, n_threads, modul
     );
 
-    let mut map: Map<Ky, u64> = Map::new(n_threads as usize + 1);
+    let mut map: Map<Ky, u64> = {
+        let hash_builder = DefaultHasher::new();
+        Map::new(n_threads as usize + 1, hash_builder)
+    };
     map.print_sizing();
 
     let mut handles = vec![];
