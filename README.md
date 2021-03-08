@@ -35,6 +35,40 @@ implement ordered map with multi-reader concurrency and serialised writes.
 
 Refer to [rustdoc](https://docs.rs/cmap) for details.
 
+Performance
+-----------
+
+**Initial load of 1 million items, 10 million items and 100 million items**
+
+Initial load is single threaded, with u32-bit key and u64-bit values using
+U32Hasher.
+
+<img src="./assets/initial-load.png" style="width: 80%">
+
+**Get operations of 1 million items on 10 million data set**
+
+Initial load is single threaded, and subsequently incremental load is
+repeated with 1-thread, 2-threads, 4-threads, 8-threads, 16-threads using
+u32-bit key and u64-bit values using U32Hasher.
+
+<img src="./assets/incremental-get.png">
+
+**Set operations of 1 million items on 10 million data set**
+
+Initial load is single threaded, and subsequently incremental load is
+repeated with 1-thread, 2-threads, 4-threads, 8-threads, 16-threads using
+u32-bit key and u64-bit values using U32Hasher.
+
+<img src="./assets/incremental-set.png">
+
+**Mixed load of of 1 million gets, 50K sets and 50K deletes 10 million data set**
+
+Initial load is single threaded, and subsequently incremental load is
+repeated with 1-thread, 2-threads, 4-threads, 8-threads, 16-threads using
+u32-bit key and u64-bit values using U32Hasher.
+
+<img src="./assets/incremental-mixed.png">
+
 **Useful links**
 
 * Wikipedia link on [hamt][hamt].
@@ -57,3 +91,5 @@ Contribution
 [hamt]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
 [ctrie]: http://aleksandar-prokopec.com/resources/docs/ctries-snapshot.pdf
 [city-hash]: https://github.com/google/cityhash
+[dco]: https://developercertificate.org/
+
