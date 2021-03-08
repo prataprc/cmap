@@ -91,7 +91,8 @@ fn test_hamming_distance() {
 
 #[test]
 fn test_map() {
-    let seed: u128 = [93808280188270876915817886943766741423, random()][random::<usize>() % 2];
+    let seed: u128 =
+        [93808280188270876915817886943766741423, random()][random::<usize>() % 2];
     // let seed: u128 = 93808280188270876915817886943766741423;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 

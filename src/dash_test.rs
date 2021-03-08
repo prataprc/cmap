@@ -10,7 +10,8 @@ type Ky = u32;
 
 #[test]
 fn test_dash_map() {
-    let seed: u128 = [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
+    let seed: u128 =
+        [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
     // let seed: u128 = 221544245499661277858524746728600114414;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 

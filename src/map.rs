@@ -627,7 +627,11 @@ where
     K: Default + Clone,
     V: Default + Clone,
 {
-    fn new_bi_list(item: Item<K, V>, leaf: &Item<K, V>, cas: &mut Cas<K, V>) -> *mut Node<K, V> {
+    fn new_bi_list(
+        item: Item<K, V>,
+        leaf: &Item<K, V>,
+        cas: &mut Cas<K, V>,
+    ) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('l');
 
         match node.as_mut() {
@@ -674,7 +678,11 @@ where
         (node_ptr, old_value)
     }
 
-    fn new_list_without(olds: &[Item<K, V>], i: usize, cas: &mut Cas<K, V>) -> *mut Node<K, V> {
+    fn new_list_without(
+        olds: &[Item<K, V>],
+        i: usize,
+        cas: &mut Cas<K, V>,
+    ) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('l');
 
         match node.as_mut() {
@@ -1032,7 +1040,12 @@ where
         }
     }
 
-    fn compact_trie_from(w: u8, n: usize, depth: usize, op: CasOp<K, V>) -> (bool, CasRc<()>) {
+    fn compact_trie_from(
+        w: u8,
+        n: usize,
+        depth: usize,
+        op: CasOp<K, V>,
+    ) -> (bool, CasRc<()>) {
         let mut node = op.cas.alloc_node('t');
         node.trie_copy_from(unsafe { op.old.as_ref().unwrap() });
 

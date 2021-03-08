@@ -61,7 +61,13 @@ fn test_arr_map() {
     mem::drop(arr);
 }
 
-fn with_arr(id: u32, seed: u128, modul: u32, n_ops: usize, mut map: Map<u32, u32>) -> Vec<u32> {
+fn with_arr(
+    id: u32,
+    seed: u128,
+    modul: u32,
+    n_ops: usize,
+    mut map: Map<u32, u32>,
+) -> Vec<u32> {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
     let mut arr = vec![0_u32; modul as usize];
 
