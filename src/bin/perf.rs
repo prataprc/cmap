@@ -30,6 +30,9 @@ pub struct Opt {
 
     #[structopt(long = "threads", default_value = "1")]
     threads: usize,
+
+    #[structopt(long = "validate")]
+    validate: bool,
 }
 
 fn main() {
@@ -71,7 +74,9 @@ fn main() {
         report.flamegraph(file).unwrap();
     };
 
-    println!("{:?}", map.validate());
+    if opts.validate {
+        println!("{:?}", map.validate());
+    }
 
     mem::drop(map)
 }

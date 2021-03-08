@@ -35,4 +35,4 @@ dashmap = { version = "4.0.2"}
 
 [features]
 perf = ["structopt", "rand", "dashmap"]
-
+compact = []

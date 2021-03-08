@@ -50,7 +50,7 @@ macro_rules! gc_epoch {
 macro_rules! generate_op {
     ($this:expr, $inode:expr, $old:expr) => {
         CasOp {
-            epoch: &$this.epoch, // TODO, use seqno, instead of taking the epoch.
+            epoch: &$this.epoch,
             inode: $inode,
             old: $old,
             cas: &mut $this.cas,
@@ -60,11 +60,6 @@ macro_rules! generate_op {
 
 // TODO: atomic-ordering replace SeqCst with Acquire/Release.
 // TODO: n_compacts and n_retries accounting in test/dev mode.
-
-// TODO: compact() logic
-//   * implement shrink_to_fit for memory optimization.
-//   * Compact trie-childs to capacity == length.
-//   * Compact list-items to capacity == length.
 
 pub struct Map<K, V> {
     id: usize,
@@ -610,6 +605,8 @@ where
                 unsafe { items.set_len(2) }; // **IMPORTANT**
                 items[0] = item;
                 items[1].clone_from(leaf);
+                #[cfg(freature = "compact")]
+                items.shrink_to_fit();
             }
             _ => unreachable!(),
         };
@@ -633,7 +630,10 @@ where
             Node::List { items } => {
                 items.clear();
                 items.extend_from_slice(olds);
-                update_into_list(item, items)
+                let old_value = update_into_list(item, items);
+                #[cfg(feature = "compact")]
+                items.shrink_to_fit();
+                old_value
             }
             _ => unreachable!(),
         };
@@ -651,6 +651,8 @@ where
                 items.clear();
                 items.extend_from_slice(&olds[..i]);
                 items.extend_from_slice(&olds[i + 1..]); // skip i
+                #[cfg(feature = "compact")]
+                items.shrink_to_fit();
             }
             _ => unreachable!(),
         }
@@ -689,6 +691,8 @@ where
                         let node = Self::new_subtrie(item, leaf, &pairs[1..], op);
                         childs.clear();
                         childs.insert(0, AtomicPtr::new(Child::new_deep(node, op.cas)));
+                        #[cfg(feature = "compact")]
+                        childs.shrink_to_fit();
                     }
                     _ => unreachable!(),
                 };
@@ -718,6 +722,8 @@ where
                         };
                         let leaf = leaf.clone();
                         childs.insert(n, AtomicPtr::new(Child::new_leaf(leaf, op.cas)));
+                        #[cfg(feature = "compact")]
+                        childs.shrink_to_fit();
                     }
                     _ => unreachable!(),
                 };
@@ -779,7 +785,11 @@ where
         node.trie_copy_from(unsafe { op.old.as_ref().unwrap() });
 
         match node.as_mut() {
-            Node::Trie { childs, .. } => childs.insert(n, AtomicPtr::new(new_child_ptr)),
+            Node::Trie { childs, .. } => {
+                childs.insert(n, AtomicPtr::new(new_child_ptr));
+                #[cfg(feature = "compact")]
+                childs.shrink_to_fit();
+            }
             _ => unreachable!(),
         }
         node.hamming_set(w);
@@ -970,7 +980,11 @@ where
         node.trie_copy_from(unsafe { op.old.as_ref().unwrap() });
 
         match node.as_mut() {
-            Node::Trie { childs, .. } => childs.remove(n),
+            Node::Trie { childs, .. } => {
+                childs.remove(n);
+                #[cfg(feature = "compact")]
+                childs.shrink_to_fit();
+            }
             _ => unreachable!(),
         };
         node.hamming_reset(w);
@@ -1035,10 +1049,18 @@ where
                             *node = Node::Tomb { item };
                             true
                         }
-                        _ => false,
+                        _ => {
+                            #[cfg(feature = "compact")]
+                            childs.shrink_to_fit();
+                            false
+                        }
                     }
                 }
-                _ => false,
+                _ => {
+                    #[cfg(feature = "compact")]
+                    childs.shrink_to_fit();
+                    false
+                }
             },
             _ => unreachable!(),
         };
