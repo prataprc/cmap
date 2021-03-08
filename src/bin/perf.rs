@@ -5,9 +5,6 @@ use std::{mem, thread, time};
 
 use cmap::{Map, U32Hasher};
 
-// TODO: when we compile bin/perf with `pprof` feature and run it via valgrind
-//    there are memory-leaks. Is that normal ?
-
 type Ky = u32;
 
 /// Command line options.

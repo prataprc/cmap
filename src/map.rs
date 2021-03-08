@@ -61,13 +61,6 @@ macro_rules! generate_op {
     };
 }
 
-// TODO: atomic-ordering replace SeqCst with Acquire/Release.
-// TODO: n_compacts and n_retries accounting in test/dev mode.
-// TODO: maintain n_count as AtomicU64 to avoid full table walk for
-//   len() call.
-// TODO: Replace AtomicPtr<Child> with Box<Child> in Node::Trie
-// TODO: optimize hamming_distance with SSE or popcnt instructions.
-
 /// Map implement concurrent hash-map of key ``K`` and value ``V``.
 pub struct Map<K, V, H = DefaultHasher> {
     id: usize,
@@ -586,8 +579,11 @@ where
             Node::Tomb { .. } => unreachable!(),
             Node::Trie { childs, .. } => {
                 let nc = childs.len();
-                debug_assert!(depth > 1 && nc > 0, "unexpected node.trie n:{}", nc);
-                debug_assert!(nc <= 16, "unexpected node.trie n:{}", nc);
+                if depth > 1 {
+                    debug_assert!(nc > 0, "unexpected node.trie n:{}", nc);
+                } else {
+                    debug_assert!(nc <= 16, "unexpected node.trie n:{}", nc);
+                }
                 stats.n_childs += childs.len();
 
                 stats.n_mem += {
@@ -1658,8 +1654,6 @@ where
         .map(|res| res.0)
 }
 
-// TODO: count the number of leaf nodes.
-// TODO: count the sum total of leaf nodes depth, compute average.
 #[derive(Default, Debug)]
 pub struct Stats {
     pub n_nodes: usize,
