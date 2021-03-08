@@ -60,7 +60,11 @@ macro_rules! generate_op {
 
 // TODO: atomic-ordering replace SeqCst with Acquire/Release.
 // TODO: n_compacts and n_retries accounting in test/dev mode.
+// TODO: maintain n_count as AtomicU64 to avoid full table walk for
+//   len() call.
+// TODO: application defined hashing.
 
+/// Map implement concurrent hash-map of key ``K`` and value ``V``.
 pub struct Map<K, V> {
     id: usize,
     root: Arc<Root<K, V>>,
@@ -144,6 +148,7 @@ where
     K: Debug,
     V: Debug,
 {
+    #[cfg(any(test, feature = "perf"))]
     fn print(&self, prefix: &str) {
         println!("{}Item<{:?},{:?}>", prefix, self.key, self.value);
     }
@@ -154,6 +159,7 @@ where
     K: Default + Clone + Debug,
     V: Default + Clone + Debug,
 {
+    #[cfg(any(test, feature = "perf"))]
     fn print(&self, prefix: &str) {
         let node = unsafe { self.node.load(SeqCst).as_ref().unwrap() };
         node.print(prefix)
@@ -198,6 +204,12 @@ where
     K: 'static + Send + Default + Clone,
     V: 'static + Send + Default + Clone,
 {
+    /// Create a new instance of map. All the clones created from this map will
+    /// share its internal data structure through atomic serialization.
+    ///
+    /// If application intent to use this map in single threaded mode, supply
+    /// `concurrency` as 1. Otherwise supplied level of concurrency must be equal
+    /// to or greater than the number of times this intance is going to be cloned.
     pub fn new(concurrency: usize) -> Map<K, V> {
         let mut cas = gc::Cas::new();
         let root = {
@@ -253,11 +265,19 @@ where
         }
     }
 
+    /// Data structure internally uses epoch based garbage collection for safety
+    /// and optimization. Garbage collection is per map-clone/thread and for
+    /// each thread gc will be triggered for every mutation operation. This can
+    /// be costly since this require accessing an array of atomically protected
+    /// 64-bit seqno. By setting this to N, gc will be triggered,
+    /// for each thread, for every N mutations.
     pub fn set_gc_period(&mut self, period: usize) -> &mut Self {
         self.gc_period = period;
         self
     }
 
+    /// Create a new clone of this map. Cloned map have seperate ownership of Map,
+    /// and implement Send / Sync for thread-safety.
     pub fn cloned(&self) -> Map<K, V> {
         self.map_pool
             .lock()
@@ -266,15 +286,23 @@ where
             .unwrap()
     }
 
+    /// Return the number of items indexed in the map. This may not be accurate due
+    /// to concurrent writes. Note that this is a costly operation walking through
+    /// the entire map.
+    pub fn len(&self) -> usize {
+        let inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
+        let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
+        node.count()
+    }
+
     /// Call this method after all other concurrnet instances have been
     /// dropped.
     ///
-    /// * There shall be not tomb-nodes.
+    /// * There shall be no tomb-nodes.
     /// * There shall be no empty trie-nodes that is not root.
     /// * There shall be no trie-nodes with childs.len() > 16.
     /// * There shall be no list-node with items.len() < 2
     /// * All list-nodes must be at 9th level.
-    /// * change all assert!() macro call to debug_assert!()
     pub fn validate(&self) -> Stats
     where
         K: Debug,
@@ -322,6 +350,7 @@ where
     K: Default + Clone + Debug,
     V: Default + Clone + Debug,
 {
+    #[cfg(any(test, feature = "perf"))]
     pub fn print(&self)
     where
         K: Debug,
@@ -333,6 +362,7 @@ where
         unsafe { self.root.load(SeqCst).as_ref().unwrap().print("  ") };
     }
 
+    #[cfg(any(test, feature = "perf"))]
     pub fn print_sizing(&self) {
         println!("size of node {:4}", mem::size_of::<Node<K, V>>());
         println!(
@@ -495,6 +525,7 @@ where
     K: Default + Clone + Debug,
     V: Default + Clone + Debug,
 {
+    #[cfg(any(test, feature = "perf"))]
     fn print(&self, prefix: &str) {
         match self {
             Node::Trie { bmp, childs } => {
@@ -1475,12 +1506,6 @@ where
 
         self.access_log[self.id].store(seqno, SeqCst);
         self.epoch.fetch_add(1, SeqCst);
-    }
-
-    pub fn len(&self) -> usize {
-        let inode: &In<K, V> = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
-        let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
-        node.count()
     }
 }
 

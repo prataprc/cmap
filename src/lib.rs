@@ -1,3 +1,55 @@
+//! Package implement Concurrent hash map.
+//!
+//! Quoting from [Wikipedia][pds]:
+//!
+//! > A data structure is *partially persistent* if all versions can be
+//! > accessed but only the newest version can be modified. The data
+//! > structure is *fully persistent* if every version can be both accessed
+//! > and modified. If there is also a meld or merge operation that can
+//! > create a new version from two previous versions, the data structure is
+//! > called *confluently persistent*. Structures that are not persistent are
+//! > called *ephemeral* data structures.
+//!
+//! This implementation of hash map cannot be strictly classified into either
+//! of the above definition. It supports concurrent writes, using atomic
+//! ``Load``, ``Store`` and ``Cas`` operations under the hood, and _does not_
+//! provide point in time snapshot for transactional operations or iterative operations.
+//!
+//! If point in time snapshots are needed refer to [ppom] package, that
+//! implement ordered map with multi-reader concurrency and serialised writes.
+//!
+//! - Each entry in [Map] instance correspond to a {Key, Value} pair.
+//! - Parametrised over `key-type` and `value-type`.
+//! - API - set(), get(), remove() using key.
+//! - Uses ownership model and borrow semantics to ensure safety.
+//! - Implement a custom epoch-based-garbage-collection to handle write
+//!   concurrency and memory optimization.
+//! - No Durability guarantee.
+//! - Thread safe for both concurrent writes and concurrent reads.
+//!
+//! Thread safety
+//! -------------
+//!
+//! As an optimization, creation of a [Map] instance requires the application
+//! to supply the level concurrency upfront. That is, if Map is going to be
+//! cloned N times for the life-time of the map, then concurrency level is N.
+//! Subsequently all access to the internal hash-map is serialized via atomic
+//! ``Load``, ``Store`` and ``Cas`` operations.
+//!
+//! Ownership and Cloning
+//! ---------------------
+//!
+//! Once Map instance is created, cloning is a cheap operation. Maps cloned
+//! from the same instances share their hash-trie data structure among
+//! its clones. Ownership rules adhere to rust ownership model and all access
+//! require mutable reference.
+//!
+//! Application defined hashing
+//! ===========================
+//!
+//! [pds]: https://en.wikipedia.org/wiki/Persistent_data_structure
+//! [ppom]: https://github.com/bnclabs/cmap
+
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(destructuring_assignment)]
