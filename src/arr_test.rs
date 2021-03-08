@@ -20,7 +20,7 @@ fn test_arr_map() {
     let modul = key_max / n_threads;
 
     println!(
-        "test_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
+        "test_arr_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
         seed, key_max, n_ops, n_threads, modul
     );
 

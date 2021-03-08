@@ -10,8 +10,11 @@ type Ky = u32;
 
 #[test]
 fn test_dash_map() {
-    let seed: u128 = random();
-    // let seed: u128 = 114474774555146480506885522408182975209;
+    let seed: u128 = [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
+    // seed:14663020117923236904527626031186665712
+    // seed:79958195774405277136092141651943663085
+    // let seed: u128 = 237163044484200654362314306801922920886;
+    let seed: u128 = 221544245499661277858524746728600114414;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
@@ -23,7 +26,7 @@ fn test_dash_map() {
     let modul = key_max / n_threads;
 
     println!(
-        "test_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
+        "test_dash_map seed:{} key_max:{} ops:{} threads:{} modul:{}",
         seed, key_max, n_ops, n_threads, modul
     );
 
