@@ -38,6 +38,8 @@ Refer to [rustdoc](https://docs.rs/cmap) for details.
 Performance
 -----------
 
+Machine: 1 Gen Thread-ripper 16/32 cores and 64GB RAM.
+
 **Initial load of 1 million items, 10 million items and 100 million items**
 
 Initial load is single threaded, with u32-bit key and u64-bit values using
