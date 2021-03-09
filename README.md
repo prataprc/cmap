@@ -59,7 +59,7 @@ Useful links
 Contribution
 ------------
 
-* Simple workflow. Fork, modify and raise a pull request.
+* Simple workflow. Fork - Modify - Pull request.
 * Before making a PR,
   * Run `make build` to confirm all versions of build is passing with
     0 warnings and 0 errors.
@@ -74,4 +74,4 @@ Contribution
 [city-hash]: https://github.com/google/cityhash
 [ppom]: https://github.com/bnclabs/ppom
 [dco]: https://developercertificate.org/
-
+[spellcheck]: https://github.com/drahnr/cargo-spellcheck
