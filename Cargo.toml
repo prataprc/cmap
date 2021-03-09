@@ -22,11 +22,11 @@ name = "perf"
 required-features = ["perf"]
 
 [dependencies]
-fasthash = "0.4.0"
-structopt = { version = "0.3.20", default-features = false, optional = true }
-rand = { version = "0.7.3", features = ["small_rng"], optional = true }
 dashmap = { version = "4.0.2", optional = true }
+fasthash = "0.4.0"
 pprof = { version = "0.4", features = ["flamegraph"], optional = true }
+rand = { version = "0.7.3", features = ["small_rng"], optional = true }
+structopt = { version = "0.3.20", default-features = false, optional = true }
 
 [dev-dependencies]
 rand = { version = "0.7.3", features = ["small_rng"] }
