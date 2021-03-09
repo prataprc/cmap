@@ -38,40 +38,19 @@ Refer to [rustdoc](https://docs.rs/cmap) for details.
 Performance
 -----------
 
-Machine: 1 Gen Thread-ripper 16/32 cores and 64GB RAM.
+Machine: Gen-1 Thread-ripper 16/32 cores and 64GB RAM. All measurements use
+32-bit key and 64-bit value and U32Hasher from cmap.
 
-**Initial load of 1 million items, 10 million items and 100 million items**
+With 16 concurrent threads on a 10-million data set, cmap can perform
+~12-million get operations.
 
-Initial load is single threaded, with u32-bit key and u64-bit values using
-U32Hasher.
+ <img width=70% src="./assets/get-ops.png">
+ <img width=70% src="./assets/set-ops.png">
+ <img width=70% src="./assets/mixed-ops-90-10.png">
+ <img width=70% src="./assets/mixed-ops-50-50.png">
 
-<img src="./assets/initial-load.png" style="width: 80%">
-
-**Get operations of 1 million items on 10 million data set**
-
-Initial load is single threaded, and subsequently incremental load is
-repeated with 1-thread, 2-threads, 4-threads, 8-threads, 16-threads using
-u32-bit key and u64-bit values using U32Hasher.
-
-<img src="./assets/incremental-get.png">
-
-**Set operations of 1 million items on 10 million data set**
-
-Initial load is single threaded, and subsequently incremental load is
-repeated with 1-thread, 2-threads, 4-threads, 8-threads, 16-threads using
-u32-bit key and u64-bit values using U32Hasher.
-
-<img src="./assets/incremental-set.png">
-
-**Mixed load of of 1 million gets, 50K sets and 50K deletes 10 million data set**
-
-Initial load is single threaded, and subsequently incremental load is
-repeated with 1-thread, 2-threads, 4-threads, 8-threads, 16-threads using
-u32-bit key and u64-bit values using U32Hasher.
-
-<img src="./assets/incremental-mixed.png">
-
-**Useful links**
+Useful links
+------------
 
 * Wikipedia link on [hamt][hamt].
 * Research paper on [ctrie][ctrie].
