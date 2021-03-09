@@ -20,7 +20,7 @@ of the above definition. It supports concurrent writes, using atomic
 Load, Store and Cas operations under the hood, and _does not_ provide
 point in time snapshot for transactional operations or iterative operations.
 
-If point in time snapshots are needed refer to [ppom] package, that
+If point in time snapshots are needed refer to [ppom][ppom] package, that
 implement ordered map with multi-reader concurrency and serialised writes.
 
 * [x] Each entry in [Map] instance correspond to a {Key, Value} pair.
@@ -72,5 +72,6 @@ Contribution
 [hamt]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
 [ctrie]: http://aleksandar-prokopec.com/resources/docs/ctries-snapshot.pdf
 [city-hash]: https://github.com/google/cityhash
+[ppom]: https://github.com/bnclabs/ppom
 [dco]: https://developercertificate.org/
 
