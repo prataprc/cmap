@@ -23,7 +23,7 @@ point in time snapshot for transactional operations or iterative operations.
 If point in time snapshots are needed refer to [ppom][ppom] package, that
 implement ordered map with multi-reader concurrency and serialised writes.
 
-* [x] Each entry in [Map] instance correspond to a {Key, Value} pair.
+* [x] Each entry in Map instance correspond to a {Key, Value} pair.
 * [x] Parametrised over `key-type` and `value-type`.
 * [x] Parametrised over hash-builder for application defined hashing.
 * [x] API - set(), get(), remove() using key.
