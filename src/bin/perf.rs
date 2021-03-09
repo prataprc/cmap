@@ -1,7 +1,8 @@
+use dashmap::DashMap;
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
-use std::{mem, thread, time};
+use std::{mem, sync::Arc, thread, time};
 
 use cmap::{Map, U32Hasher};
 
@@ -30,10 +31,21 @@ pub struct Opt {
 
     #[structopt(long = "validate")]
     validate: bool,
+
+    #[structopt(long = "dashmap")]
+    dash_map: bool,
 }
 
 fn main() {
     let opts = Opt::from_args();
+    if opts.dash_map {
+        dash_map(opts)
+    } else {
+        cmap(opts)
+    }
+}
+
+fn cmap(opts: Opt) {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
@@ -57,7 +69,7 @@ fn main() {
     for j in 0..opts.threads {
         let (opts, map) = (opts.clone(), map.cloned());
         let seed = seed + ((j as u128) * 100);
-        let h = thread::spawn(move || do_incremental(j, seed, opts, map));
+        let h = thread::spawn(move || cmap_incremental(j, seed, opts, map));
         handles.push(h);
     }
 
@@ -78,7 +90,7 @@ fn main() {
     mem::drop(map)
 }
 
-fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Hasher>) {
+fn cmap_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Hasher>) {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let start = time::Instant::now();
@@ -96,6 +108,73 @@ fn do_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Hash
             rems -= 1;
         } else {
             map.get(&key);
+            gets -= 1;
+        }
+    }
+    println!(
+        "incremental-{} for operations {}, took {:?}",
+        j,
+        opts.sets + opts.rems + opts.gets,
+        start.elapsed()
+    );
+}
+
+fn dash_map(opts: Opt) {
+    let seed = opts.seed.unwrap_or_else(random);
+    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+
+    #[cfg(feature = "pprof")]
+    let guard = pprof::ProfilerGuard::new(100000).unwrap();
+
+    let dmap: Arc<DashMap<Ky, u64>> = Arc::new(DashMap::new());
+
+    // initial load
+    let start = time::Instant::now();
+    for _i in 0..opts.loads {
+        let key = rng.gen::<Ky>() % (opts.loads as Ky);
+        let val: u64 = rng.gen();
+        dmap.insert(key, val);
+    }
+
+    println!("loaded {} items in {:?}", opts.loads, start.elapsed());
+
+    let mut handles = vec![];
+    for j in 0..opts.threads {
+        let (opts, dmap) = (opts.clone(), Arc::clone(&dmap));
+        let seed = seed + ((j as u128) * 100);
+        let h = thread::spawn(move || dmap_incremental(j, seed, opts, dmap));
+        handles.push(h);
+    }
+
+    for handle in handles.into_iter() {
+        handle.join().unwrap()
+    }
+
+    #[cfg(feature = "pprof")]
+    if let Ok(report) = guard.report().build() {
+        let file = std::fs::File::create("flamegraph.svg").unwrap();
+        report.flamegraph(file).unwrap();
+    };
+}
+
+fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>) {
+    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+
+    let start = time::Instant::now();
+    let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
+    let key_max = (opts.loads + opts.sets) as Ky;
+    while (sets + rems + gets) > 0 {
+        let key = rng.gen::<Ky>() % key_max;
+
+        let op = rng.gen::<usize>() % (sets + rems + gets);
+        if op < sets {
+            dmap.insert(key, rng.gen());
+            sets -= 1;
+        } else if op < (sets + rems) {
+            dmap.remove(&key);
+            rems -= 1;
+        } else {
+            dmap.get(&key);
             gets -= 1;
         }
     }
