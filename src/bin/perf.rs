@@ -49,9 +49,6 @@ fn cmap(opts: Opt) {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    #[cfg(feature = "pprof")]
-    let guard = pprof::ProfilerGuard::new(100000).unwrap();
-
     let mut map: Map<Ky, u64, U32Hasher> = Map::new(opts.threads + 1, U32Hasher::new());
     map.print_sizing();
 
@@ -76,12 +73,6 @@ fn cmap(opts: Opt) {
     for handle in handles.into_iter() {
         handle.join().unwrap()
     }
-
-    #[cfg(feature = "pprof")]
-    if let Ok(report) = guard.report().build() {
-        let file = std::fs::File::create("flamegraph.svg").unwrap();
-        report.flamegraph(file).unwrap();
-    };
 
     if opts.validate {
         println!("{:?}", map.validate());
@@ -123,9 +114,6 @@ fn dash_map(opts: Opt) {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    #[cfg(feature = "pprof")]
-    let guard = pprof::ProfilerGuard::new(100000).unwrap();
-
     let dmap: Arc<DashMap<Ky, u64>> = Arc::new(DashMap::new());
 
     // initial load
@@ -149,12 +137,6 @@ fn dash_map(opts: Opt) {
     for handle in handles.into_iter() {
         handle.join().unwrap()
     }
-
-    #[cfg(feature = "pprof")]
-    if let Ok(report) = guard.report().build() {
-        let file = std::fs::File::create("flamegraph.svg").unwrap();
-        report.flamegraph(file).unwrap();
-    };
 }
 
 fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>) {
