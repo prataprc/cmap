@@ -17,6 +17,7 @@ fn test_arr_map() {
         let n = [1, 2, 4, 8, 16, 32, 64, 1024][rng.gen::<usize>() % 7];
         cmp::min(key_max, n)
     };
+    let gc_period = [0, 1, 16, 32, 256, 1024][rng.gen::<usize>() % 6];
     let modul = key_max / n_threads;
 
     println!(
@@ -28,6 +29,7 @@ fn test_arr_map() {
         let hash_builder = DefaultHasher::new();
         Map::new(n_threads as usize + 1, hash_builder)
     };
+    map.set_gc_period(gc_period);
     map.print_sizing();
 
     let mut handles = vec![];
