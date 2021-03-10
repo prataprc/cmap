@@ -44,10 +44,10 @@ Machine: Gen-1 Thread-ripper 16/32 cores and 64GB RAM. All measurements use
 With 16 concurrent threads on a 10-million data set, cmap can perform
 ~12-million get operations.
 
- <img width=70% src="./assets/get-ops.png">
- <img width=70% src="./assets/set-ops.png">
- <img width=70% src="./assets/mixed-ops-90-10.png">
- <img width=70% src="./assets/mixed-ops-50-50.png">
+ <img width=70% src="./reports/2021-03-10/get-ops.png">
+ <img width=70% src="./reports/2021-03-10/set-ops.png">
+ <img width=70% src="./reports/2021-03-10/mixed-ops-90-10.png">
+ <img width=70% src="./reports/2021-03-10/mixed-ops-50-50.png">
 
 Useful links
 ------------
