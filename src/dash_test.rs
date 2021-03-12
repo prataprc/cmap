@@ -53,7 +53,7 @@ fn test_dash_map() {
 
     for item in dmap.iter() {
         let (key, val) = item.pair();
-        assert_eq!(map.get(key), Some(val.clone()), "for key {}", key);
+        assert_eq!(map.get(key), Some(*val), "for key {}", key);
     }
 
     println!("len {}", map.len());

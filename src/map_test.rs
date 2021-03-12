@@ -68,7 +68,7 @@ fn test_list_operation() {
 fn test_hamming_distance() {
     let bmp = 0xaaaa;
     for w in 0..16 {
-        let dist = hamming_distance(w, bmp.clone());
+        let dist = hamming_distance(w, bmp);
         let o = ((w % 16) / 2) as usize;
         match w % 2 {
             0 => assert_eq!(dist, Distance::Insert(o)),
@@ -80,13 +80,25 @@ fn test_hamming_distance() {
     let bmp = 0x5555;
     for w in 0..16 {
         let o = ((w % 16) / 2) as usize;
-        let dist = hamming_distance(w, bmp.clone());
+        let dist = hamming_distance(w, bmp);
         match w % 2 {
             0 => assert_eq!(dist, Distance::Set(o)),
             1 => assert_eq!(dist, Distance::Insert(o + 1)),
             _ => unreachable!(),
         }
     }
+}
+
+#[test]
+fn test_print_sizing() {
+    use crate::gc::Reclaim;
+
+    type T1 = Vec<Box<Reclaim<u32, u64>>>;
+    type T2 = Vec<Reclaim<u32, u64>>;
+    let vs: T1 = vec![Box::new(Reclaim::default()), Box::new(Reclaim::default())];
+    println!("{:p} {:p}", &vs[0], &vs[1]);
+    let vs: T2 = vec![Reclaim::default(), Reclaim::default()];
+    println!("{:p} {:p}", &vs[0], &vs[1]);
 }
 
 #[test]
@@ -134,7 +146,7 @@ fn test_map() {
     }
 
     for (key, val) in btmap.iter() {
-        assert_eq!(map.get(key), Some(val.clone()), "for key {}", key);
+        assert_eq!(map.get(key), Some(*val), "for key {}", key);
     }
 
     let ln = map.len();

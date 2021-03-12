@@ -49,7 +49,7 @@ fn cmap(opts: Opt) {
     let seed = opts.seed.unwrap_or_else(random);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let mut map: Map<Ky, u64, U32Hasher> = Map::new(opts.threads + 1, U32Hasher::new());
+    let mut map: Map<Ky, u64, _> = Map::new(opts.threads + 1, U32Hasher::default());
     map.print_sizing();
 
     // initial load

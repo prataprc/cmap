@@ -50,7 +50,7 @@ fn test_arr_map() {
     for (key, val) in arr.iter().enumerate() {
         match val {
             0 => assert_eq!(map.get(&(key as u32)), None, "for key {}", key),
-            _ => assert_eq!(map.get(&(key as u32)), Some(val.clone()), "for key {}", key),
+            _ => assert_eq!(map.get(&(key as u32)), Some(*val), "for key {}", key),
         }
     }
 

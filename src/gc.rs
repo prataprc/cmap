@@ -14,6 +14,7 @@ pub const MAX_POOL_SIZE: usize = 1024;
 // CAS operation
 
 pub struct Cas<K, V> {
+    #[allow(clippy::vec_box)]
     reclaims: Vec<Box<Reclaim<K, V>>>,
     older: Vec<OwnedMem<K, V>>,
     newer: Vec<OwnedMem<K, V>>,
@@ -22,6 +23,7 @@ pub struct Cas<K, V> {
     node_trie_pool: Vec<Box<Node<K, V>>>,
     node_list_pool: Vec<Box<Node<K, V>>>,
     node_tomb_pool: Vec<Box<Node<K, V>>>,
+    #[allow(clippy::vec_box)]
     reclaim_pool: Vec<Box<Reclaim<K, V>>>,
 
     n_allocs: usize,
@@ -31,15 +33,15 @@ pub struct Cas<K, V> {
 impl<K, V> Drop for Cas<K, V> {
     fn drop(&mut self) {
         debug_assert!(
-            self.older.len() == 0,
+            self.older.is_empty(),
             "invariant Cas::older should be ZERO on drop"
         );
         debug_assert!(
-            self.newer.len() == 0,
+            self.newer.is_empty(),
             "invariant Cas::newer should be ZERO on drop"
         );
         debug_assert!(
-            self.reclaims.len() == 0,
+            self.reclaims.is_empty(),
             "invariant Cas::reclaims should be ZERO on drop"
         );
 
@@ -95,7 +97,7 @@ impl<K, V> Cas<K, V> {
     }
 
     pub fn has_reclaims(&self) -> bool {
-        self.reclaims.len() > 0
+        !self.reclaims.is_empty()
     }
 
     pub fn free_on_pass(&mut self, m: Mem<K, V>) {
@@ -226,26 +228,29 @@ impl<K, V> Cas<K, V> {
     where
         V: Clone,
     {
-        if loc.compare_and_swap(old, new, SeqCst) == old {
-            let r = {
-                let mut r = self.alloc_reclaim();
-                r.epoch = Some(epoch.load(SeqCst));
-                r.drain_items_from(&mut self.older);
-                r
-            };
-            self.reclaims.push(r);
-            unsafe { self.newer.set_len(0) }; // leak newer values.
-            true
-        } else {
-            unsafe { self.older.set_len(0) }; // leak older values.
-            while let Some(om) = self.newer.pop() {
-                match om {
-                    OwnedMem::Child(val) => self.free_child(val),
-                    OwnedMem::Node(val) => self.free_node(val),
-                    OwnedMem::None => (),
-                }
+        match loc.compare_exchange(old, new, SeqCst, SeqCst) {
+            Ok(_) => {
+                let r = {
+                    let mut r = self.alloc_reclaim();
+                    r.epoch = Some(epoch.load(SeqCst));
+                    r.drain_items_from(&mut self.older);
+                    r
+                };
+                self.reclaims.push(r);
+                unsafe { self.newer.set_len(0) }; // leak newer values.
+                true
             }
-            false
+            Err(_) => {
+                unsafe { self.older.set_len(0) }; // leak older values.
+                while let Some(om) = self.newer.pop() {
+                    match om {
+                        OwnedMem::Child(val) => self.free_child(val),
+                        OwnedMem::Node(val) => self.free_node(val),
+                        OwnedMem::None => (),
+                    }
+                }
+                false
+            }
         }
     }
 
@@ -329,7 +334,7 @@ impl<K, V> Default for Reclaim<K, V> {
 
 impl<K, V> Reclaim<K, V> {
     fn drain_items_from(&mut self, items: &mut Vec<OwnedMem<K, V>>) {
-        debug_assert!(self.items.len() == 0, "reclaim items {}", self.items.len());
+        debug_assert!(self.items.is_empty(), "reclaim items {}", self.items.len());
 
         self.items.reserve_exact(items.len());
         unsafe {

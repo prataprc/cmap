@@ -11,7 +11,7 @@ pub struct DefaultHasher {
 }
 
 impl DefaultHasher {
-    #[inline]
+    #[allow(clippy::new_without_default)] // TODO: Hash128 does not implement default.
     pub fn new() -> DefaultHasher {
         DefaultHasher {
             hash_builder: Hash128,
@@ -38,15 +38,9 @@ impl BuildHasher for DefaultHasher {
 }
 
 /// Type implement [BuildHasher] optimized for ``u32`` key set.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct U32Hasher {
     key: u32,
-}
-
-impl U32Hasher {
-    pub fn new() -> Self {
-        U32Hasher { key: 0 }
-    }
 }
 
 impl BuildHasher for U32Hasher {

@@ -297,6 +297,11 @@ where
         node.count()
     }
 
+    /// Return whether map is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Call this method after all other concurrnet instances have been
     /// dropped.
     ///
@@ -392,7 +397,7 @@ where
     fn new_leaf(leaf: Item<K, V>, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V> {
         let mut child = cas.alloc_child();
 
-        *child = Child::Leaf(leaf.clone());
+        *child = Child::Leaf(leaf);
 
         let child_ptr = Box::leak(child);
         cas.free_on_fail(gc::Mem::Child(child_ptr));
@@ -418,10 +423,7 @@ where
             Child::Leaf(_) => false,
             Child::Deep(inode) => {
                 let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
-                match node {
-                    Node::Tomb { .. } => true,
-                    _ => false,
-                }
+                matches!(node, Node::Tomb { .. })
             }
         }
     }
@@ -455,7 +457,7 @@ where
     fn hamming_set(&mut self, w: u8) {
         match self {
             Node::Trie { bmp, .. } => {
-                *bmp = *bmp | (1 << w);
+                *bmp |= 1 << w;
             }
             Node::Tomb { .. } | Node::List { .. } => (),
         }
@@ -465,7 +467,7 @@ where
     fn hamming_reset(&mut self, w: u8) {
         match self {
             Node::Trie { bmp, .. } => {
-                *bmp = *bmp & (!(1 << w));
+                *bmp &= !(1 << w);
             }
             Node::Tomb { .. } | Node::List { .. } => (),
         }
@@ -769,7 +771,7 @@ where
 
                 match node.as_mut() {
                     Node::Trie { bmp, childs } => {
-                        let n = match hamming_distance(*w2, bmp.clone()) {
+                        let n = match hamming_distance(*w2, *bmp) {
                             Distance::Insert(n) => n,
                             Distance::Set(_) => unreachable!(),
                         };
@@ -960,7 +962,7 @@ where
                 let new = Node::new_tomb(&items[j], op.cas);
                 (true, new, items[n].value.clone())
             }
-            Node::List { items } if items.len() > 0 => (
+            Node::List { items } if !items.is_empty() => (
                 false,
                 Node::new_list_without(items, n, op.cas),
                 items[n].value.clone(),
@@ -1170,7 +1172,7 @@ where
 
             inode = match node {
                 Node::Trie { bmp, childs } => {
-                    let hd = hamming_distance(w, bmp.clone());
+                    let hd = hamming_distance(w, *bmp);
                     // println!("get loop bmp:{:x} {:?}", bmp, hd);
                     match hd {
                         Distance::Insert(_) => break None,
@@ -1253,7 +1255,7 @@ where
                 // println!("set loop w:{:x} wss:{:?}", w, wss);
 
                 let n = match node {
-                    Node::Trie { bmp, .. } => match hamming_distance(w, bmp.clone()) {
+                    Node::Trie { bmp, .. } => match hamming_distance(w, *bmp) {
                         Distance::Insert(n) => {
                             // println!("set loop insert bmp:{:x} {}", bmp, n);
                             let op = generate_op!(self, inode, old);
@@ -1275,7 +1277,7 @@ where
                         // println!("set loop next level {:?}", key);
                         next_node
                     }
-                    Child::Leaf(ot) if &ot.key == &key => {
+                    Child::Leaf(ot) if ot.key == key => {
                         let op = generate_op!(self, inode, old);
                         // println!("set loop 1");
 
@@ -1285,7 +1287,7 @@ where
                             CasRc::Retry => continue 'retry,
                         }
                     }
-                    Child::Leaf(_) if wss.len() == 0 => {
+                    Child::Leaf(_) if wss.is_empty() => {
                         let op = generate_op!(self, inode, old);
                         // println!("set loop 2");
 
@@ -1395,7 +1397,7 @@ where
                 let (n, _bmp, childs) = match node {
                     Node::Trie { bmp, childs } => match childs.len() {
                         0 => break 'retry (false, None),
-                        _ => match hamming_distance(w, bmp.clone()) {
+                        _ => match hamming_distance(w, *bmp) {
                             Distance::Insert(_) => break 'retry (false, None),
                             Distance::Set(n) => (n, bmp, childs),
                         },
@@ -1520,7 +1522,7 @@ where
                 let (n, child) = match node {
                     Node::Tomb { .. } => continue 'retry,
                     Node::Trie { bmp, childs } => {
-                        let hd = hamming_distance(w, bmp.clone());
+                        let hd = hamming_distance(w, *bmp);
                         let n = match hd {
                             Distance::Insert(_) => break 'retry,
                             Distance::Set(n) => n,
@@ -1596,8 +1598,8 @@ where
 
 fn slots(key: u32) -> [u8; 8] {
     let mut arr = [0_u8; 8];
-    for i in 0..8 {
-        arr[i] = ((key >> (i * 4)) & SLOT_MASK) as u8;
+    for (i, item) in arr.iter_mut().enumerate() {
+        *item = ((key >> (i * 4)) & SLOT_MASK) as u8;
     }
     arr
 }
@@ -1618,10 +1620,10 @@ where
     V: Clone,
     Q: PartialEq + Hash + ?Sized,
 {
-    match items.iter().find(|x| x.key.borrow() == key) {
-        Some(x) => Some(x.value.clone()),
-        None => None,
-    }
+    items
+        .iter()
+        .find(|x| x.key.borrow() == key)
+        .map(|x| x.value.clone())
 }
 
 fn update_into_list<K, V>(item: Item<K, V>, items: &mut Vec<Item<K, V>>) -> Option<V>
