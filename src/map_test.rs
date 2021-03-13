@@ -96,9 +96,9 @@ fn test_print_sizing() {
     type T1 = Vec<Box<Reclaim<u32, u64>>>;
     type T2 = Vec<Reclaim<u32, u64>>;
     let vs: T1 = vec![Box::new(Reclaim::default()), Box::new(Reclaim::default())];
-    println!("{:p} {:p}", &vs[0], &vs[1]);
+    println!("test_print_sizing {:p} {:p}", &vs[0], &vs[1]);
     let vs: T2 = vec![Reclaim::default(), Reclaim::default()];
-    println!("{:p} {:p}", &vs[0], &vs[1]);
+    println!("test_print_sizing {:p} {:p}", &vs[0], &vs[1]);
 }
 
 #[test]
@@ -150,9 +150,9 @@ fn test_map() {
     }
 
     let ln = map.len();
-    println!("len {}", ln);
+    println!("test_map len {}", ln);
     assert_eq!(ln, btmap.len());
-    println!("Validate .... {:?}", map.validate());
+    println!("test_map Validate .... {:?}", map.validate());
 
     // map.print();
 
@@ -225,7 +225,7 @@ fn with_btreemap(
         };
     }
 
-    println!("{} counts {:?}", id, counts);
+    println!("test_map {} counts {:?}", id, counts);
     btmap
 }
 
