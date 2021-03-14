@@ -98,21 +98,18 @@ pub enum Node<K, V> {
 pub enum Child<K, V> {
     Deep(In<K, V>),
     Leaf(Item<K, V>),
+    None,
 }
 
-#[derive(Clone, Default, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Item<K, V> {
     key: K,
     value: V,
 }
 
-impl<K, V> Default for Child<K, V>
-where
-    K: Default,
-    V: Default,
-{
+impl<K, V> Default for Child<K, V> {
     fn default() -> Self {
-        Child::Leaf(Item::default())
+        Child::None
     }
 }
 
@@ -154,11 +151,15 @@ where
 
 impl<K, V> In<K, V>
 where
-    K: Default + Clone + Debug,
-    V: Default + Clone + Debug,
+    K: Clone,
+    V: Clone,
 {
     #[cfg(any(test, feature = "perf"))]
-    fn print(&self, prefix: &str) {
+    fn print(&self, prefix: &str)
+    where
+        K: Debug,
+        V: Debug,
+    {
         let node = unsafe { self.node.load(SeqCst).as_ref().unwrap() };
         node.print(prefix)
     }
@@ -170,7 +171,7 @@ where
     #[cfg(test)]
     fn collisions<H>(&self, hb: &H)
     where
-        K: Default + Clone + Hash,
+        K: Clone + Hash + Debug,
         H: BuildHasher,
     {
         unsafe { self.node.load(SeqCst).as_ref().unwrap().collisions(hb) };
@@ -200,8 +201,8 @@ impl<K, V, H> Drop for Map<K, V, H> {
 
 impl<K, V, H> Map<K, V, H>
 where
-    K: 'static + Send + Default + Clone,
-    V: 'static + Send + Default + Clone,
+    K: Clone,
+    V: Clone,
     H: Clone,
 {
     /// Create a new instance of map. All the clones created from this map will
@@ -310,11 +311,7 @@ where
     /// * There shall be no trie-nodes with childs.len() > 16.
     /// * There shall be no list-node with items.len() < 2
     /// * All list-nodes must be at 9th level.
-    pub fn validate(&self) -> Stats
-    where
-        K: Debug,
-        V: Debug,
-    {
+    pub fn validate(&self) -> Stats {
         let mut stats = unsafe { self.root.load(SeqCst).as_ref().unwrap().validate(0) };
         stats.n_pools = self.n_pools.load(SeqCst) + self.cas.to_pools_len();
         stats.n_allocs = self.n_allocs.load(SeqCst) + self.cas.to_alloc_count();
@@ -361,8 +358,8 @@ where
 
 impl<K, V, H> Map<K, V, H>
 where
-    K: Default + Clone + Debug,
-    V: Default + Clone + Debug,
+    K: Clone,
+    V: Clone,
 {
     #[cfg(any(test, feature = "perf"))]
     pub fn print(&self)
@@ -391,8 +388,8 @@ where
 
 impl<K, V> Child<K, V>
 where
-    K: Default + Clone,
-    V: Default + Clone,
+    K: Clone,
+    V: Clone,
 {
     fn new_leaf(leaf: Item<K, V>, cas: &mut gc::Cas<K, V>) -> *mut Child<K, V> {
         let mut child = cas.alloc_child();
@@ -425,6 +422,7 @@ where
                 let node = unsafe { inode.node.load(SeqCst).as_ref().unwrap() };
                 matches!(node, Node::Tomb { .. })
             }
+            Child::None => unreachable!(),
         }
     }
 }
@@ -435,14 +433,15 @@ impl<K, V> Child<K, V> {
         match child.as_ref() {
             Child::Leaf(_item) => (),
             Child::Deep(inode) => Node::dropped(inode.node.load(SeqCst)),
+            Child::None => unreachable!(),
         }
     }
 }
 
 impl<K, V> Node<K, V>
 where
-    K: Default + Clone,
-    V: Default + Clone,
+    K: Clone,
+    V: Clone,
 {
     #[inline]
     fn get_child(&self, n: usize) -> *mut Child<K, V> {
@@ -505,6 +504,7 @@ where
                         Child::Deep(inode) => {
                             unsafe { inode.node.load(SeqCst).as_ref().unwrap() }.count()
                         }
+                        Child::None => unreachable!(),
                     }
                 }
                 len
@@ -533,11 +533,15 @@ impl<K, V> Node<K, V> {
 
 impl<K, V> Node<K, V>
 where
-    K: Default + Clone + Debug,
-    V: Default + Clone + Debug,
+    K: Clone,
+    V: Clone,
 {
     #[cfg(any(test, feature = "perf"))]
-    fn print(&self, prefix: &str) {
+    fn print(&self, prefix: &str)
+    where
+        K: Debug,
+        V: Debug,
+    {
         match self {
             Node::Trie { bmp, childs } => {
                 println!("{}Node::Trie<{:x},{}>", prefix, bmp, childs.len());
@@ -554,6 +558,7 @@ where
                             let prefix = prefix.to_string() + "  ";
                             inode.print(&prefix);
                         }
+                        Child::None => unreachable!(),
                     }
                 }
             }
@@ -597,6 +602,7 @@ where
                     match unsafe { child.load(SeqCst).as_ref().unwrap() } {
                         Child::Leaf(_) => stats.n_items += 1,
                         Child::Deep(inode) => stats = stats + inode.validate(depth),
+                        Child::None => unreachable!(),
                     }
                 }
             }
@@ -615,7 +621,7 @@ where
     #[cfg(test)]
     fn collisions<H>(&self, hb: &H)
     where
-        K: Hash,
+        K: Hash + Debug,
         H: BuildHasher,
     {
         match self {
@@ -624,6 +630,7 @@ where
                     match unsafe { child.load(SeqCst).as_ref().unwrap() } {
                         Child::Leaf(_) => (),
                         Child::Deep(inode) => inode.collisions(hb),
+                        Child::None => unreachable!(),
                     }
                 }
             }
@@ -640,8 +647,8 @@ where
 
 impl<K, V> Node<K, V>
 where
-    K: Default + Clone,
-    V: Default + Clone,
+    K: Clone,
+    V: Clone,
 {
     fn new_bi_list(
         item: Item<K, V>,
@@ -908,6 +915,7 @@ where
                         Child::new_deep(node, op.cas)
                     }
                     Child::Deep(_) => unreachable!(),
+                    Child::None => unreachable!(),
                 };
                 childs[n] = AtomicPtr::new(new_child_ptr);
             }
@@ -1087,7 +1095,7 @@ where
                             _ => unreachable!(),
                         }
                     }
-                    Child::Leaf(_) => unreachable!(),
+                    Child::Leaf(_) | Child::None => unreachable!(),
                 }
             }
             _ => unreachable!(),
@@ -1139,14 +1147,15 @@ where
 
 impl<K, V, H> Map<K, V, H>
 where
-    K: Default + Clone,
-    V: Default + Clone,
+    K: Clone,
+    V: Clone,
     H: BuildHasher,
 {
     pub fn get<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
+        H: BuildHasher,
     {
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
@@ -1184,6 +1193,7 @@ where
                                     break Some(item.value.clone());
                                 }
                                 Child::Leaf(_) => break None,
+                                Child::None => unreachable!(),
                             }
                         }
                     }
@@ -1315,6 +1325,7 @@ where
                             CasRc::Retry => continue 'retry,
                         }
                     }
+                    Child::None => unreachable!(),
                 }
             }
         };
@@ -1454,6 +1465,7 @@ where
 
                                         (false, Node::remove_child(w, n, op))
                                     }
+                                    Child::None => unreachable!(),
                                 }
                             }
                             _ => {
@@ -1469,6 +1481,7 @@ where
                         }
                     }
                     Child::Leaf(_) => break 'retry (false, None),
+                    Child::None => unreachable!(),
                 }
             }
         };
@@ -1544,6 +1557,7 @@ where
                     Node::Trie { .. } => match child {
                         Child::Leaf(_) => break 'retry,
                         Child::Deep(inode) => inode,
+                        Child::None => unreachable!(),
                     },
                     _ => unreachable!(),
                 }
@@ -1618,7 +1632,7 @@ fn get_from_list<K, V, Q>(key: &Q, items: &[Item<K, V>]) -> Option<V>
 where
     K: Borrow<Q>,
     V: Clone,
-    Q: PartialEq + Hash + ?Sized,
+    Q: PartialEq + ?Sized,
 {
     items
         .iter()
@@ -1628,8 +1642,8 @@ where
 
 fn update_into_list<K, V>(item: Item<K, V>, items: &mut Vec<Item<K, V>>) -> Option<V>
 where
-    K: PartialEq + Default + Clone,
-    V: Default + Clone,
+    K: PartialEq,
+    V: Clone,
 {
     match items.iter().enumerate().find(|(_, x)| x.key == item.key) {
         Some((i, x)) => {
@@ -1647,7 +1661,7 @@ where
 fn has_key<K, V, Q>(items: &[Item<K, V>], key: &Q) -> Option<usize>
 where
     K: Borrow<Q>,
-    Q: PartialEq + Hash + ?Sized,
+    Q: PartialEq + ?Sized,
 {
     items
         .iter()

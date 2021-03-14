@@ -122,11 +122,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    pub fn alloc_node(&mut self, variant: char) -> Box<Node<K, V>>
-    where
-        K: Default,
-        V: Default,
-    {
+    pub fn alloc_node(&mut self, variant: char) -> Box<Node<K, V>> {
         match variant {
             'l' => match self.node_list_pool.pop() {
                 Some(val) => val,
@@ -158,11 +154,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    pub fn alloc_child(&mut self) -> Box<Child<K, V>>
-    where
-        K: Default,
-        V: Default,
-    {
+    pub fn alloc_child(&mut self) -> Box<Child<K, V>> {
         match self.child_pool.pop() {
             Some(val) => val,
             None => {
@@ -224,10 +216,7 @@ impl<K, V> Cas<K, V> {
         loc: &AtomicPtr<T>,
         old: *mut T,
         new: *mut T,
-    ) -> bool
-    where
-        V: Clone,
-    {
+    ) -> bool {
         match loc.compare_exchange(old, new, SeqCst, SeqCst) {
             Ok(_) => {
                 let r = {
