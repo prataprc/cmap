@@ -1151,7 +1151,7 @@ where
     V: Clone,
     H: BuildHasher,
 {
-    pub fn get<Q>(&mut self, key: &Q) -> Option<V>
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
