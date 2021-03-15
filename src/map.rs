@@ -199,19 +199,27 @@ impl<K, V, H> Drop for Map<K, V, H> {
     }
 }
 
-impl<K, V, H> Map<K, V, H>
-where
-    K: Clone,
-    V: Clone,
-    H: Clone,
-{
+impl<K, V, H> Clone for Map<K, V, H> {
+    fn clone(&self) -> Map<K, V, H> {
+        self.map_pool
+            .lock()
+            .expect("map lock poisoned")
+            .pop()
+            .unwrap()
+    }
+}
+
+impl<K, V, H> Map<K, V, H> {
     /// Create a new instance of map. All the clones created from this map will
     /// share its internal data structure through atomic serialization.
     ///
     /// If application intent to use this map in single threaded mode, supply
     /// `concurrency` as 1. Otherwise supplied level of concurrency must be equal
     /// to or greater than the number of times this intance is going to be cloned.
-    pub fn new(concurrency: usize, hash_builder: H) -> Map<K, V, H> {
+    pub fn new(concurrency: usize, hash_builder: H) -> Map<K, V, H>
+    where
+        H: Clone,
+    {
         let mut cas = gc::Cas::new();
         let root = {
             let node = cas.alloc_node('t');
@@ -247,7 +255,10 @@ where
         map
     }
 
-    fn clones(&self, ids: Vec<usize>) {
+    fn clones(&self, ids: Vec<usize>)
+    where
+        H: Clone,
+    {
         for id in ids.into_iter() {
             let map = Map {
                 id,
@@ -279,16 +290,6 @@ where
         self
     }
 
-    /// Create a new clone of this map. Cloned map have seperate ownership of Map,
-    /// and implement Send / Sync for thread-safety.
-    pub fn cloned(&self) -> Map<K, V, H> {
-        self.map_pool
-            .lock()
-            .expect("map lock poisoned")
-            .pop()
-            .unwrap()
-    }
-
     /// Return the number of items indexed in the map. This may not be accurate due
     /// to concurrent writes. Note that this is a costly operation walking through
     /// the entire map.
@@ -302,7 +303,14 @@ where
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
 
+impl<K, V, H> Map<K, V, H>
+where
+    K: Clone,
+    V: Clone,
+    H: Clone,
+{
     /// Call this method after all other concurrnet instances have been
     /// dropped.
     ///
@@ -438,11 +446,7 @@ impl<K, V> Child<K, V> {
     }
 }
 
-impl<K, V> Node<K, V>
-where
-    K: Clone,
-    V: Clone,
-{
+impl<K, V> Node<K, V> {
     #[inline]
     fn get_child(&self, n: usize) -> *mut Child<K, V> {
         match self {
@@ -472,18 +476,17 @@ where
         }
     }
 
-    fn get_value<Q>(&self, key: &Q) -> Option<V>
+    fn as_value<'a, Q>(&'a self, key: &Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
-        V: Clone,
     {
         match self {
             Node::List { items } => get_from_list(key, items),
             Node::Tomb { item } => match item {
                 Some(item) => {
                     if item.key.borrow() == key {
-                        Some(item.value.clone())
+                        Some(&item.value)
                     } else {
                         None
                     }
@@ -1145,15 +1148,11 @@ where
     }
 }
 
-impl<K, V, H> Map<K, V, H>
-where
-    K: Clone,
-    V: Clone,
-    H: BuildHasher,
-{
+impl<K, V, H> Map<K, V, H> {
     pub fn get<Q>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
+        V: Clone,
         Q: PartialEq + Hash + ?Sized,
         H: BuildHasher,
     {
@@ -1174,7 +1173,7 @@ where
 
             let w = match wss.first() {
                 Some(w) => *w,
-                None => break node.get_value(key),
+                None => break node.as_value(key).cloned(),
             };
             wss = &wss[1..];
             // println!("get loop w:{:x}", w);
@@ -1210,9 +1209,71 @@ where
         res
     }
 
+    pub fn get_with<Q, F, T>(&self, key: &Q, callb: F) -> Option<T>
+    where
+        K: Borrow<Q>,
+        Q: PartialEq + Hash + ?Sized,
+        H: BuildHasher,
+        F: Fn(&V) -> T,
+    {
+        let seqno = self.epoch.load(SeqCst);
+        self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
+
+        let ws = {
+            let hasher = self.hash_builder.build_hasher();
+            slots(key_to_hash32(key, hasher))
+        };
+        let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
+        let mut wss = &ws[..];
+        // println!("{}", format_ws!("get outer ws:{:?}", wss));
+
+        let res = loop {
+            let old = inode.node.load(SeqCst);
+            let node = unsafe { old.as_ref().unwrap() };
+
+            let w = match wss.first() {
+                Some(w) => *w,
+                None => break node.as_value(key).map(|v| callb(v)),
+            };
+            wss = &wss[1..];
+            // println!("get loop w:{:x}", w);
+
+            inode = match node {
+                Node::Trie { bmp, childs } => {
+                    let hd = hamming_distance(w, *bmp);
+                    // println!("get loop bmp:{:x} {:?}", bmp, hd);
+                    match hd {
+                        Distance::Insert(_) => break None,
+                        Distance::Set(n) => {
+                            let ptr = childs[n].load(SeqCst);
+                            match unsafe { ptr.as_ref().unwrap() } {
+                                Child::Deep(next_inode) => next_inode,
+                                Child::Leaf(item) if item.key.borrow() == key => {
+                                    break Some(callb(&item.value))
+                                }
+                                Child::Leaf(_) => break None,
+                                Child::None => unreachable!(),
+                            }
+                        }
+                    }
+                }
+                Node::List { .. } => unreachable!(),
+                Node::Tomb { item } => match item {
+                    Some(m) if m.key.borrow() == key => break Some(callb(&m.value)),
+                    _ => break None,
+                },
+            }
+        };
+
+        self.access_log[self.id].store(seqno, SeqCst);
+        res
+    }
+
     pub fn set(&mut self, key: K, value: V) -> Option<V>
     where
-        K: PartialEq + Hash,
+        K: Clone + PartialEq + Hash,
+        V: Clone,
+        H: BuildHasher,
     {
         let (seqno, res) = self.do_set(key, value);
         if self.gc_count == 0 {
@@ -1229,7 +1290,9 @@ where
 
     fn do_set(&mut self, key: K, value: V) -> (u64, Option<V>)
     where
-        K: PartialEq + Hash,
+        K: Clone + PartialEq + Hash,
+        V: Clone,
+        H: BuildHasher,
     {
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
@@ -1338,8 +1401,10 @@ where
 
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
     where
-        K: Borrow<Q>,
+        K: Clone + Borrow<Q>,
+        V: Clone,
         Q: PartialEq + Hash + ?Sized,
+        H: BuildHasher,
     {
         let (seqno, compact, res) = self.do_remove(key);
         if compact {
@@ -1359,8 +1424,10 @@ where
 
     fn do_remove<Q>(&mut self, key: &Q) -> (u64, bool, Option<V>)
     where
-        K: Borrow<Q>,
+        K: Clone + Borrow<Q>,
+        V: Clone,
         Q: PartialEq + Hash + ?Sized,
+        H: BuildHasher,
     {
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
@@ -1494,8 +1561,10 @@ where
 
     fn do_compact<Q>(&mut self, key: &Q)
     where
-        K: Borrow<Q>,
+        K: Clone + Borrow<Q>,
+        V: Clone,
         Q: Hash + ?Sized,
+        H: BuildHasher,
     {
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);
@@ -1628,16 +1697,15 @@ fn subtrie_zip<'a>(hash: u32, wss: &[u8], out: &'a mut [(u8, u8); 8]) -> &'a [(u
     &out[..n]
 }
 
-fn get_from_list<K, V, Q>(key: &Q, items: &[Item<K, V>]) -> Option<V>
+fn get_from_list<'a, K, V, Q>(key: &Q, items: &'a [Item<K, V>]) -> Option<&'a V>
 where
     K: Borrow<Q>,
-    V: Clone,
     Q: PartialEq + ?Sized,
 {
     items
         .iter()
         .find(|x| x.key.borrow() == key)
-        .map(|x| x.value.clone())
+        .map(|x| &x.value)
 }
 
 fn update_into_list<K, V>(item: Item<K, V>, items: &mut Vec<Item<K, V>>) -> Option<V>

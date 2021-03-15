@@ -41,7 +41,7 @@ fn test_dash_map() {
     for id in 0..n_threads {
         let seed = seed + ((id as u128) * 100);
 
-        let (map, dmap) = (map.cloned(), Arc::clone(&dmap));
+        let (map, dmap) = (map.clone(), Arc::clone(&dmap));
         let h = thread::spawn(move || with_dashmap(id, seed, modul, n_ops, map, dmap));
 
         handles.push(h);
@@ -128,6 +128,20 @@ fn with_dashmap(
 
                 assert_eq!(map_val, dmap_val, "key {}", key);
             }
+            Op::GetWith(key) => {
+                // map.print();
+
+                let map_val = map.get_with(&key, |v| *v);
+                let dmap_val = dmap.get(&key).map(|x| *x);
+                if map_val != dmap_val {
+                    map.print();
+                }
+
+                counts[2][0] += 1;
+                counts[2][1] += if map_val.is_none() { 0 } else { 1 };
+
+                assert_eq!(map_val, dmap_val, "key {}", key);
+            }
         };
     }
 
@@ -137,6 +151,7 @@ fn with_dashmap(
 #[derive(Clone, Debug, Arbitrary)]
 enum Op {
     Get(Ky),
+    GetWith(Ky),
     Set(Ky, u64),
     Remove(Ky),
 }
@@ -147,6 +162,10 @@ impl Op {
             Op::Get(key) => {
                 let key = (id * modul) + (key % modul);
                 Op::Get(key)
+            }
+            Op::GetWith(key) => {
+                let key = (id * modul) + (key % modul);
+                Op::GetWith(key)
             }
             Op::Set(key, value) => {
                 let key = (id * modul) + (key % modul);

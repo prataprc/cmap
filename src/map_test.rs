@@ -32,10 +32,10 @@ fn test_list_operation() {
     assert_eq!(update_into_list((10, 10000).into(), &mut items), Some(1000));
     assert_eq!(update_into_list((60, 600).into(), &mut items), None);
 
-    assert_eq!(get_from_list(&10, &items), Some(10000));
-    assert_eq!(get_from_list(&50, &items), Some(500));
-    assert_eq!(get_from_list(&30, &items), Some(300));
-    assert_eq!(get_from_list(&20, &items), Some(200));
+    assert_eq!(get_from_list(&10, &items), Some(&10000));
+    assert_eq!(get_from_list(&50, &items), Some(&500));
+    assert_eq!(get_from_list(&30, &items), Some(&300));
+    assert_eq!(get_from_list(&20, &items), Some(&200));
 
     assert_eq!(
         items,
@@ -133,7 +133,7 @@ fn test_map() {
     for id in 0..n_threads {
         let seed = seed + ((id as u128) * 100);
 
-        let map = map.cloned();
+        let map = map.clone();
         let btmap: BTreeMap<Ky, u64> = BTreeMap::new();
         let h = thread::spawn(move || with_btreemap(id, seed, modul, n_ops, map, btmap));
 
@@ -222,6 +222,20 @@ fn with_btreemap(
 
                 assert_eq!(map_val, btmap_val, "key {}", key);
             }
+            Op::GetWith(key) => {
+                // map.print();
+
+                let map_val = map.get_with(&key, |v| *v);
+                let btmap_val = btmap.get(&key).cloned();
+                if map_val != btmap_val {
+                    // map.print();
+                }
+
+                counts[2][0] += 1;
+                counts[2][1] += if map_val.is_none() { 0 } else { 1 };
+
+                assert_eq!(map_val, btmap_val, "key {}", key);
+            }
         };
     }
 
@@ -232,6 +246,7 @@ fn with_btreemap(
 #[derive(Clone, Debug, Arbitrary)]
 enum Op {
     Get(Ky),
+    GetWith(Ky),
     Set(Ky, u64),
     Remove(Ky),
 }
@@ -242,6 +257,10 @@ impl Op {
             Op::Get(key) => {
                 let key = (id * modul) + (key % modul);
                 Op::Get(key)
+            }
+            Op::GetWith(key) => {
+                let key = (id * modul) + (key % modul);
+                Op::GetWith(key)
             }
             Op::Set(key, value) => {
                 let key = (id * modul) + (key % modul);

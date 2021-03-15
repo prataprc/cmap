@@ -36,7 +36,7 @@ fn test_arr_map() {
     for id in 0..n_threads {
         let seed = seed + ((id as u128) * 100);
 
-        let map = map.cloned();
+        let map = map.clone();
         let h = thread::spawn(move || with_arr(id, seed, modul, n_ops, map));
 
         handles.push(h);
@@ -130,6 +130,20 @@ fn with_arr(
 
                 assert_eq!(map_val.unwrap_or(0), arr_val, "key {}", key);
             }
+            Op::GetWith(key) => {
+                // map.print();
+
+                let arr_val = arr[off];
+                let map_val = map.get_with(&key, |v| *v);
+                if map_val.unwrap_or(0) != arr_val {
+                    map.print();
+                }
+
+                counts[2][0] += 1;
+                counts[2][1] += if map_val.is_none() { 0 } else { 1 };
+
+                assert_eq!(map_val.unwrap_or(0), arr_val, "key {}", key);
+            }
         };
     }
 
@@ -140,6 +154,7 @@ fn with_arr(
 #[derive(Clone, Debug, Arbitrary)]
 enum Op {
     Get(u32),
+    GetWith(u32),
     Set(u32),
     Remove(u32),
 }
@@ -150,6 +165,10 @@ impl Op {
             Op::Get(key) => {
                 let off = key % modul;
                 (off as usize, Op::Get((id * modul) + off))
+            }
+            Op::GetWith(key) => {
+                let off = key % modul;
+                (off as usize, Op::GetWith((id * modul) + off))
             }
             Op::Set(key) => {
                 let off = key % modul;

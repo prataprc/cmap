@@ -64,7 +64,7 @@ fn cmap(opts: Opt) {
 
     let mut handles = vec![];
     for j in 0..opts.threads {
-        let (opts, map) = (opts.clone(), map.cloned());
+        let (opts, map) = (opts.clone(), map.clone());
         let seed = seed + ((j as u128) * 100);
         let h = thread::spawn(move || cmap_incremental(j, seed, opts, map));
         handles.push(h);
