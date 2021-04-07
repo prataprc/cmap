@@ -68,6 +68,7 @@ Contribution
   * [Install][spellcheck] and run `cargo spellcheck` to remove common spelling mistakes.
 * [Developer certificate of origin][dco] is preferred.
 
+[pds]: https://en.wikipedia.org/wiki/Persistent_data_structure
 [hamt]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
 [ctrie]: http://aleksandar-prokopec.com/resources/docs/ctries-snapshot.pdf
 [city-hash]: https://github.com/google/cityhash
