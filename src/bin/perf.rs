@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use flurry;
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
@@ -34,12 +35,17 @@ pub struct Opt {
 
     #[structopt(long = "dashmap")]
     dash_map: bool,
+
+    #[structopt(long = "flurry")]
+    flurry_map: bool,
 }
 
 fn main() {
     let opts = Opt::from_args();
     if opts.dash_map {
         dash_map(opts)
+    } else if opts.flurry_map {
+        flurry_map(opts)
     } else {
         cmap(opts)
     }
@@ -157,6 +163,71 @@ fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>
             rems -= 1;
         } else {
             dmap.get(&key);
+            gets -= 1;
+        }
+    }
+    println!(
+        "incremental-{} for operations {}, took {:?}",
+        j,
+        opts.sets + opts.rems + opts.gets,
+        start.elapsed()
+    );
+}
+
+fn flurry_map(opts: Opt) {
+    use flurry::HashMap;
+
+    let seed = opts.seed.unwrap_or_else(random);
+    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+
+    let fmap: Arc<HashMap<Ky, u64>> = Arc::new(HashMap::new());
+
+    // initial load
+    let start = time::Instant::now();
+    for _i in 0..opts.loads {
+        let key = rng.gen::<Ky>() % (opts.loads as Ky);
+        let val: u64 = rng.gen();
+        fmap.pin().insert(key, val);
+    }
+
+    println!("loaded {} items in {:?}", opts.loads, start.elapsed());
+
+    let mut handles = vec![];
+    for j in 0..opts.threads {
+        let (opts, fmap) = (opts.clone(), Arc::clone(&fmap));
+        let seed = seed + ((j as u128) * 100);
+        let h = thread::spawn(move || fmap_incremental(j, seed, opts, fmap));
+        handles.push(h);
+    }
+
+    for handle in handles.into_iter() {
+        handle.join().unwrap()
+    }
+}
+
+fn fmap_incremental(
+    j: usize,
+    seed: u128,
+    opts: Opt,
+    fmap: Arc<flurry::HashMap<Ky, u64>>,
+) {
+    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+
+    let start = time::Instant::now();
+    let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
+    let key_max = (opts.loads + opts.sets) as Ky;
+    while (sets + rems + gets) > 0 {
+        let key = rng.gen::<Ky>() % key_max;
+
+        let op = rng.gen::<usize>() % (sets + rems + gets);
+        if op < sets {
+            fmap.pin().insert(key, rng.gen());
+            sets -= 1;
+        } else if op < (sets + rems) {
+            fmap.pin().remove(&key);
+            rems -= 1;
+        } else {
+            fmap.pin().get(&key);
             gets -= 1;
         }
     }

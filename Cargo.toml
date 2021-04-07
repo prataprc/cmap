@@ -23,6 +23,7 @@ required-features = ["perf"]
 
 [dependencies]
 dashmap = { version = "4.0.2", optional = true }
+flurry = { version = "0.3.1", optional = true }
 fasthash = "0.4.0"
 rand = { version = "0.7.3", features = ["small_rng"], optional = true }
 structopt = { version = "0.3.20", default-features = false, optional = true }
@@ -33,5 +34,5 @@ arbitrary = { version = "0.4.7", features = ["derive"] }
 dashmap = { version = "4.0.2"}
 
 [features]
-perf = ["structopt", "rand", "dashmap"]
+perf = ["structopt", "rand", "dashmap", "flurry"]
 compact = []
