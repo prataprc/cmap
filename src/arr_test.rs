@@ -6,7 +6,7 @@ use std::{cmp, mem, thread};
 use super::*;
 
 #[test]
-fn test_arr_map() {
+fn test_with_arr_map() {
     let seed: u128 = random();
     // let seed: u128 = 268219686229904906077089108983355143992;
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());

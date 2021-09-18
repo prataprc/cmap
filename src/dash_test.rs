@@ -9,7 +9,7 @@ use super::*;
 type Ky = u32;
 
 #[test]
-fn test_dash_map() {
+fn test_with_dash_map() {
     let seed: u128 =
         [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
     // let seed: u128 = 221544245499661277858524746728600114414;

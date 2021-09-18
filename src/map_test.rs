@@ -102,7 +102,7 @@ fn test_print_sizing() {
 }
 
 #[test]
-fn test_map() {
+fn test_with_btree_map() {
     let seed: u128 =
         [93808280188270876915817886943766741423, random()][random::<usize>() % 2];
     // let seed: u128 = 93808280188270876915817886943766741423;

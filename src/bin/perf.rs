@@ -1,5 +1,4 @@
 use dashmap::DashMap;
-use flurry;
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 

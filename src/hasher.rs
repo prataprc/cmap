@@ -17,7 +17,6 @@ impl Default for DefaultHasher {
 }
 
 impl DefaultHasher {
-    #[allow(clippy::new_without_default)] // TODO: Hash128 does not implement default.
     pub fn new() -> DefaultHasher {
         DefaultHasher {
             hash_builder: Hash128,

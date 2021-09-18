@@ -1,6 +1,6 @@
 [package]
 name = "cmap"
-version = "0.2.0"
+version = "0.3.0"
 description = "Concurrent multi-writer hash-map using trie"
 repository = "https://github.com/bnclabs/cmap"
 documentation = "https://docs.rs/cmap"
