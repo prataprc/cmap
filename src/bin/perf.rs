@@ -3,7 +3,7 @@ use flurry;
 use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
-use std::{mem, sync::Arc, thread, time};
+use std::{cmp, mem, sync::Arc, thread, time};
 
 use cmap::{Map, U32Hasher};
 
@@ -18,11 +18,14 @@ pub struct Opt {
     #[structopt(long = "loads", default_value = "1000000")] // default 1M
     loads: usize,
 
-    #[structopt(long = "gets", default_value = "0")] // default 1M
+    #[structopt(long = "gets", default_value = "0")]
     gets: usize,
 
-    #[structopt(long = "sets", default_value = "0")] // default 1M
+    #[structopt(long = "sets", default_value = "0")]
     sets: usize,
+
+    #[structopt(long = "contention")]
+    contention: bool,
 
     #[structopt(long = "rems", default_value = "0")] // default 1M
     rems: usize,
@@ -58,15 +61,22 @@ fn cmap(opts: Opt) {
     let mut map: Map<Ky, u64, _> = Map::new(opts.threads + 1, U32Hasher::default());
     map.print_sizing();
 
+    let key_max = cmp::min(Ky::MAX as usize, opts.loads) as Ky;
+
     // initial load
     let start = time::Instant::now();
     for _i in 0..opts.loads {
-        let key = rng.gen::<Ky>() % (opts.loads as Ky);
+        let key = rng.gen::<Ky>() % key_max;
         let val: u64 = rng.gen();
         map.set(key, val);
     }
 
-    println!("loaded {} items in {:?}", opts.loads, start.elapsed());
+    println!(
+        "loaded {} items in {:?}, len:{}",
+        opts.loads,
+        start.elapsed(),
+        map.len()
+    );
 
     let mut handles = vec![];
     for j in 0..opts.threads {
@@ -84,6 +94,7 @@ fn cmap(opts: Opt) {
         println!("{:?}", map.validate());
     }
 
+    println!("final count {} items", map.len());
     mem::drop(map)
 }
 
@@ -92,12 +103,18 @@ fn cmap_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Ha
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
-    let key_max = (opts.loads + opts.sets) as Ky;
+    let key_max = cmp::min(Ky::MAX as usize, opts.loads + opts.sets) as Ky;
+    println!("{}", key_max);
+
     while (sets + rems + gets) > 0 {
         let key = rng.gen::<Ky>() % key_max;
 
         let op = rng.gen::<usize>() % (sets + rems + gets);
-        if op < sets {
+        if op < sets && opts.contention {
+            let key = 0x12345678;
+            map.set(key, rng.gen());
+            sets -= 1;
+        } else if op < sets {
             map.set(key, rng.gen());
             sets -= 1;
         } else if op < (sets + rems) {
@@ -109,7 +126,7 @@ fn cmap_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Ha
         }
     }
     println!(
-        "incremental-{} for operations {}, took {:?}",
+        "incremental-{:02} for operations {}, took {:?}",
         j,
         opts.sets + opts.rems + opts.gets,
         start.elapsed()
@@ -121,16 +138,22 @@ fn dash_map(opts: Opt) {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let dmap: Arc<DashMap<Ky, u64>> = Arc::new(DashMap::new());
+    let key_max = cmp::min(Ky::MAX as usize, opts.loads) as Ky;
 
     // initial load
     let start = time::Instant::now();
     for _i in 0..opts.loads {
-        let key = rng.gen::<Ky>() % (opts.loads as Ky);
+        let key = rng.gen::<Ky>() % key_max;
         let val: u64 = rng.gen();
         dmap.insert(key, val);
     }
 
-    println!("loaded {} items in {:?}", opts.loads, start.elapsed());
+    println!(
+        "loaded {} items in {:?} len:{}",
+        opts.loads,
+        start.elapsed(),
+        dmap.len()
+    );
 
     let mut handles = vec![];
     for j in 0..opts.threads {
@@ -143,6 +166,9 @@ fn dash_map(opts: Opt) {
     for handle in handles.into_iter() {
         handle.join().unwrap()
     }
+
+    println!("final count {} items", dmap.len());
+    mem::drop(dmap);
 }
 
 fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>) {
@@ -150,12 +176,19 @@ fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
-    let key_max = (opts.loads + opts.sets) as Ky;
+    let key_max = cmp::min(Ky::MAX as usize, opts.loads + opts.sets) as Ky;
+    println!("{}", key_max);
+
     while (sets + rems + gets) > 0 {
         let key = rng.gen::<Ky>() % key_max;
+        // println!("{} {}", sets + rems + gets, key);
 
         let op = rng.gen::<usize>() % (sets + rems + gets);
-        if op < sets {
+        if op < sets && opts.contention {
+            let key = 0x12345678;
+            dmap.insert(key, rng.gen());
+            sets -= 1;
+        } else if op > sets {
             dmap.insert(key, rng.gen());
             sets -= 1;
         } else if op < (sets + rems) {
@@ -167,7 +200,7 @@ fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>
         }
     }
     println!(
-        "incremental-{} for operations {}, took {:?}",
+        "incremental-{:02} for operations {}, took {:?}",
         j,
         opts.sets + opts.rems + opts.gets,
         start.elapsed()
@@ -181,16 +214,22 @@ fn flurry_map(opts: Opt) {
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
     let fmap: Arc<HashMap<Ky, u64>> = Arc::new(HashMap::new());
+    let key_max = cmp::min(Ky::MAX as usize, opts.loads) as Ky;
 
     // initial load
     let start = time::Instant::now();
     for _i in 0..opts.loads {
-        let key = rng.gen::<Ky>() % (opts.loads as Ky);
+        let key = rng.gen::<Ky>() % key_max;
         let val: u64 = rng.gen();
         fmap.pin().insert(key, val);
     }
 
-    println!("loaded {} items in {:?}", opts.loads, start.elapsed());
+    println!(
+        "loaded {} items in {:?} len:{}",
+        opts.loads,
+        start.elapsed(),
+        fmap.len()
+    );
 
     let mut handles = vec![];
     for j in 0..opts.threads {
@@ -203,6 +242,9 @@ fn flurry_map(opts: Opt) {
     for handle in handles.into_iter() {
         handle.join().unwrap()
     }
+
+    println!("final count {} items", fmap.len());
+    mem::drop(fmap)
 }
 
 fn fmap_incremental(
@@ -215,12 +257,17 @@ fn fmap_incremental(
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
-    let key_max = (opts.loads + opts.sets) as Ky;
+    let key_max = cmp::min(Ky::MAX as usize, opts.loads + opts.sets) as Ky;
+
     while (sets + rems + gets) > 0 {
         let key = rng.gen::<Ky>() % key_max;
 
         let op = rng.gen::<usize>() % (sets + rems + gets);
-        if op < sets {
+        if op < sets && opts.contention {
+            let key = 0x12345678;
+            fmap.pin().insert(key, rng.gen());
+            sets -= 1;
+        } else if op < sets {
             fmap.pin().insert(key, rng.gen());
             sets -= 1;
         } else if op < (sets + rems) {
@@ -232,7 +279,7 @@ fn fmap_incremental(
         }
     }
     println!(
-        "incremental-{} for operations {}, took {:?}",
+        "incremental-{:02} for operations {}, took {:?}",
         j,
         opts.sets + opts.rems + opts.gets,
         start.elapsed()
