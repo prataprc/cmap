@@ -10,6 +10,12 @@ pub struct DefaultHasher {
     hash_builder: Hash128,
 }
 
+impl Default for DefaultHasher {
+    fn default() -> Self {
+        DefaultHasher::new()
+    }
+}
+
 impl DefaultHasher {
     #[allow(clippy::new_without_default)] // TODO: Hash128 does not implement default.
     pub fn new() -> DefaultHasher {
