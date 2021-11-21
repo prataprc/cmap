@@ -1,4 +1,13 @@
-use fasthash::city::crc::{Hash128, Hasher128};
+// Module provies hasher implementation for generating key digest.
+//
+// * **[DefaultHasher]**, wraps google's city hash for using it with [crate::Map]
+// * **[U32Hasher]**, can be used for [u32] type keys, where keys are directly
+//   returned as the hash digest.
+
+use fasthash::{
+    self,
+    city::crc::{Hash128, Hasher128},
+};
 
 use std::{
     convert::TryInto,
@@ -6,6 +15,7 @@ use std::{
 };
 
 /// Type uses google's city hash to convert [Hash]able key into ``u32``.
+/// Refer [fasthash] for details.
 pub struct DefaultHasher {
     hash_builder: Hash128,
 }

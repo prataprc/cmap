@@ -71,11 +71,16 @@ pub struct Map<K, V, H = DefaultHasher> {
     access_log: Arc<Vec<AtomicU64>>,
     map_pool: Arc<Mutex<Vec<Map<K, V, H>>>>,
     cas: gc::Cas<K, V>,
+
     gc_period: usize,
     gc_count: usize,
     n_pools: Arc<AtomicUsize>,
     n_allocs: Arc<AtomicUsize>,
     n_frees: Arc<AtomicUsize>,
+}
+
+pub struct Root<K, V> {
+    root: AtomicPtr<In<K, V>>,
 }
 
 pub struct In<K, V> {
@@ -111,10 +116,6 @@ impl<K, V> Default for Child<K, V> {
     fn default() -> Self {
         Child::None
     }
-}
-
-pub struct Root<K, V> {
-    root: AtomicPtr<In<K, V>>,
 }
 
 impl<K, V> Deref for Root<K, V> {

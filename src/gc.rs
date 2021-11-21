@@ -1,3 +1,5 @@
+// Module implement epocal garbage collection algorithm.
+
 use std::{
     fmt, ptr, result,
     sync::{
@@ -8,7 +10,6 @@ use std::{
 
 use crate::{map::Child, map::Node};
 
-// pub const EPOCH_PERIOD: time::Duration = time::Duration::from_millis(10);
 pub const MAX_POOL_SIZE: usize = 1024;
 
 // CAS operation

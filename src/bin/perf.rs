@@ -103,7 +103,6 @@ fn cmap_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Ha
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
     let key_max = cmp::min(Ky::MAX as usize, opts.loads + opts.sets) as Ky;
-    println!("{}", key_max);
 
     while (sets + rems + gets) > 0 {
         let key = rng.gen::<Ky>() % key_max;
