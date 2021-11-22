@@ -251,12 +251,12 @@ impl<K, V, H> Map<K, V, H> {
             n_frees: Arc::new(AtomicUsize::new(0)),
         };
 
-        map.clones((1..concurrency).collect());
+        map.create_map_pool((1..concurrency).collect());
 
         map
     }
 
-    fn clones(&self, ids: Vec<usize>)
+    fn create_map_pool(&self, ids: Vec<usize>)
     where
         H: Clone,
     {
