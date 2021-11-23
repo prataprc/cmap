@@ -1,3 +1,32 @@
+//! Module implement concurrent map.
+//!
+//! Following is the way the data structure is wired up.
+//!
+//! ```ignore
+//! Map -> Root -> In -> Node --> Trie [ -> Child ] ---> Deep
+//!                           |                     |--> Leaf
+//!                           |                     |--> None
+//!                           |-> Tomp { Item }
+//!                           |-> List [ Item ]
+//! ```
+//!
+//! We are using a combination of copy-on-write and atomic-ops, like load, store,
+//! compare-exchange to support concurrent read/write access into the map.
+//!
+//! **Drop semantics**
+//!
+//! Drop is implemented by the [Map] type and its `Root` member. At the [Map] level,
+//! before dropping the root and its trie, following cleanup is performed
+//!
+//! * Map::access_log is set to ZERO.
+//! * Pending reclaims from the `Cas` instance, which is not shared between Map's clone,
+//!   are garbage collected, Refer to [gc] module for details on how epochal garbage
+//!   collection works.
+//! * stats like `n_pool`, `n_allocs` and `n_frees` are updated from the current clone's
+//!   `cas` instance.
+//!
+//! Actual drop is executed by Node::dropped() function
+
 use std::{
     borrow::Borrow,
     fmt::Debug,
@@ -79,15 +108,15 @@ pub struct Map<K, V, H = DefaultHasher> {
     n_frees: Arc<AtomicUsize>,
 }
 
-pub struct Root<K, V> {
+pub(crate) struct Root<K, V> {
     root: AtomicPtr<In<K, V>>,
 }
 
-pub struct In<K, V> {
+pub(crate) struct In<K, V> {
     node: AtomicPtr<Node<K, V>>,
 }
 
-pub enum Node<K, V> {
+pub(crate) enum Node<K, V> {
     Trie {
         bmp: u16,
         childs: Vec<AtomicPtr<Child<K, V>>>,
@@ -100,14 +129,14 @@ pub enum Node<K, V> {
     },
 }
 
-pub enum Child<K, V> {
+pub(crate) enum Child<K, V> {
     Deep(In<K, V>),
     Leaf(Item<K, V>),
     None,
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct Item<K, V> {
+pub(crate) struct Item<K, V> {
     key: K,
     value: V,
 }
@@ -1739,6 +1768,7 @@ where
         .map(|res| res.0)
 }
 
+/// Map statistics.
 #[derive(Default, Debug)]
 pub struct Stats {
     pub n_nodes: usize,

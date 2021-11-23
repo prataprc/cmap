@@ -118,9 +118,9 @@ macro_rules! err_at {
 }
 
 // mod entry;
-mod gc;
+pub mod gc;
 mod hasher;
-mod map;
+pub mod map;
 
 pub use hasher::{DefaultHasher, U32Hasher};
 pub use map::Map;

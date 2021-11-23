@@ -1,4 +1,61 @@
-// Module implement epocal garbage collection algorithm.
+//! Module implement epochal garbage collection algorithm.
+//!
+//! * Epoch is maintained as type [u64], a sequence number that monotonically increases
+//!   for every access into the trie structure, across all threads.
+//! * Epochal garbage collection is implemented for `Node` and `Child` types, variants of
+//!   `Mem` enum.
+//! * An alter-ego of `Mem` type is maintained as `OwnedMem`, which holds the ownership
+//!   to allocated memory, instead of just the pointer.
+//! * `Reclaim` type maintains a list of allocations which was allocated at a known epoch,
+//!   and these allocations can be freed once all the accessing threads has moved past
+//!   the epoch.
+//!
+//! **Swing**
+//!
+//! Swing is `compare_exchange` atomic operation done to trie nodes. Success and Failure
+//! of the operation is tightly coupled with epochal-garbage-collection.
+//!
+//! ```ignore
+//!     alloc -> swing --(success)--> reclaim-old-allocs
+//!                |
+//!                +-----(failure)--> free-new-allocs
+//! ```
+//!
+//! **Garbage Collection**
+//!
+//! GC is invoked periodically along the trie-execution-path. The general idea is to
+//! check whether any of the reclaim entry in the `Cas::reclaim` list less than the
+//! current `gc_epoch`.
+//!
+//! A note on current `epoch`. It is a 64-bit sequence number atomically shared between
+//! every clone of the Map instance. This value is initialised with `1` and monotonically
+//! increases when a `set` or `remove` access into the trie-structure _complete_.
+//!
+//! A note on `access_log`. It is an array of 64-bit sequence number that is atomically
+//! updated with current `epoch` for every `get`, `set`, `remove`. Most significant
+//! bit of the access log specifies whether the access is on-going and the remaining bits
+//! specifying the `epoch` at which the access started.
+//!
+//! A note on `gc_epoch`. It is a 64-bit sequence number that is computed, for each
+//! gc-period, along the [Map::set] and [Map::remove] execution path. Additionally
+//! it is computed when the map is dropped. A per-thread `access_log` is maintained and
+//! shared, lockless, across every clone of the [Map].
+//!
+//!
+//! **Allocation pools**
+//!
+//! * **child_pool**, to recycle enum `Child` type. They hold Leaf-Item or None,
+//!   or an atomic-pointer to Node.
+//! * **node_trie_pool**, **node_list_pool**, **node_tomb_pool**, to recycle enum `Node`
+//!   type. Separate pools are maintained for each vartiant, to optimize on vector
+//!   allocation.
+//! * **reclaim_pool**, to recycle `Reclaim` type.
+//!
+//! **Validation checks**
+//!
+//! * When Cas instance is dropped, assert length of self.older, self.newer,
+//!   self.reclaims list as ZERO.
+//!
 
 use std::{
     fmt, ptr, result,
@@ -8,13 +65,15 @@ use std::{
     },
 };
 
+#[allow(unused_imports)]
+use crate::map::Map;
 use crate::{map::Child, map::Node};
 
-pub const MAX_POOL_SIZE: usize = 1024;
+pub(crate) const MAX_POOL_SIZE: usize = 1024;
 
 // CAS operation
 
-pub struct Cas<K, V> {
+pub(crate) struct Cas<K, V> {
     #[allow(clippy::vec_box)]
     reclaims: Vec<Box<Reclaim<K, V>>>,
     older: Vec<OwnedMem<K, V>>,
@@ -101,6 +160,8 @@ impl<K, V> Cas<K, V> {
         !self.reclaims.is_empty()
     }
 
+    // mark [Node] and [Child] allocations from the trie for garbage collection in case
+    // the subsequent swing operation has passed.
     pub fn free_on_pass(&mut self, m: Mem<K, V>) {
         match m {
             Mem::Child(p) => unsafe {
@@ -112,6 +173,8 @@ impl<K, V> Cas<K, V> {
         }
     }
 
+    // mark [Node] and [Child] allocations that needs to be inserted into the trie for
+    // garbage collection in case the subsequent swing operaton has failed.
     pub fn free_on_fail(&mut self, m: Mem<K, V>) {
         match m {
             Mem::Child(p) => unsafe {
@@ -123,6 +186,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
+    // allocate a node from one of the three node pools, based on the `variant`.
     pub fn alloc_node(&mut self, variant: char) -> Box<Node<K, V>> {
         match variant {
             'l' => match self.node_list_pool.pop() {
@@ -155,6 +219,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
+    // allocate a child from the child pool.
     pub fn alloc_child(&mut self) -> Box<Child<K, V>> {
         match self.child_pool.pop() {
             Some(val) => val,
@@ -165,6 +230,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
+    // allocate reclaim instance from the reclaim pool.
     pub fn alloc_reclaim(&mut self) -> Box<Reclaim<K, V>> {
         match self.reclaim_pool.pop() {
             Some(val) => val,
@@ -175,7 +241,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    pub fn free_node(&mut self, mut node: Box<Node<K, V>>) {
+    fn free_node(&mut self, mut node: Box<Node<K, V>>) {
         let pool = match node.as_mut() {
             Node::Trie { bmp, childs } => {
                 *bmp = 0;
@@ -195,7 +261,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    pub fn free_child(&mut self, child: Box<Child<K, V>>) {
+    fn free_child(&mut self, child: Box<Child<K, V>>) {
         if self.child_pool.len() < MAX_POOL_SIZE {
             self.child_pool.push(child)
         } else {
@@ -203,7 +269,7 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    pub fn free_reclaim(&mut self, reclaim: Box<Reclaim<K, V>>) {
+    fn free_reclaim(&mut self, reclaim: Box<Reclaim<K, V>>) {
         if self.reclaim_pool.len() < MAX_POOL_SIZE {
             self.reclaim_pool.push(reclaim)
         } else {
@@ -220,6 +286,8 @@ impl<K, V> Cas<K, V> {
     ) -> bool {
         match loc.compare_exchange(old, new, SeqCst, SeqCst) {
             Ok(_) => {
+                // drain the older allocations into the reclamation entry, and mark the
+                // epoch.
                 let r = {
                     let mut r = self.alloc_reclaim();
                     r.epoch = Some(epoch.load(SeqCst));
@@ -292,7 +360,7 @@ impl<K, V> Cas<K, V> {
     }
 }
 
-pub struct Reclaim<K, V> {
+pub(crate) struct Reclaim<K, V> {
     epoch: Option<u64>,
     items: Vec<OwnedMem<K, V>>,
 }
@@ -335,7 +403,7 @@ impl<K, V> Reclaim<K, V> {
     }
 }
 
-pub enum Mem<K, V> {
+pub(crate) enum Mem<K, V> {
     Child(*mut Child<K, V>),
     Node(*mut Node<K, V>),
 }
