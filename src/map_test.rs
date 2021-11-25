@@ -111,7 +111,7 @@ fn test_with_btree_map() {
     let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
     let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
     let n_threads = {
-        let n = [1, 2, 4, 8, 16, 32, 64, 1024][rng.gen::<usize>() % 7];
+        let n = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
         cmp::min(key_max, n)
     };
     let gc_period = [0, 1, 16, 32, 256, 1024][rng.gen::<usize>() % 6];

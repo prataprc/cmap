@@ -42,7 +42,7 @@ macro_rules! test_code {
             ((1024_u64 - 1) & ((<$keytype>::MAX - 1) as u64)) as $keytype,
         ][rng.gen::<usize>() % 5];
         let n_threads = {
-            let n = [1, 2, 4, 8, 16, 32, 64, 255][rng.gen::<usize>() % 7];
+            let n = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
             cmp::min(key_max, n)
         };
         let gc_period = [0, 1, 16, 32, 256, 1024][rng.gen::<usize>() % 6];
