@@ -1803,9 +1803,15 @@ impl Add for Stats {
 #[cfg(test)]
 #[path = "arr_test.rs"]
 mod arr_test;
+
 #[cfg(test)]
-#[path = "dash_test.rs"]
-mod dash_test;
+#[path = "dash1_test.rs"]
+mod dash1_test;
+
+#[cfg(test)]
+#[path = "dash2_test.rs"]
+mod dash2_test;
+
 #[cfg(test)]
 #[path = "map_test.rs"]
 mod map_test;

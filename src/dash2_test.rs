@@ -49,7 +49,7 @@ macro_rules! test_code {
         let modul = key_max / (n_threads as $keytype);
 
         println!(
-            "test_dash_map_{} seed:{} key_max:{} ops:{} threads:{} modul:{}",
+            "test_dash2_map_{} seed:{} key_max:{} ops:{} threads:{} modul:{}",
             stringify!($keytype),
             $seed,
             key_max,
@@ -58,13 +58,13 @@ macro_rules! test_code {
             modul
         );
 
-        let mut map: Map<$keytype, u64> = {
+        let mut map: Map<$keytype, u128> = {
             let hash_builder = DefaultHasher::new();
             Map::new(n_threads as usize + 1, hash_builder)
         };
         map.set_gc_period(gc_period);
         map.print_sizing();
-        let dmap: Arc<DashMap<$keytype, u64>> = Arc::new(DashMap::new());
+        let dmap: Arc<DashMap<$keytype, u128>> = Arc::new(DashMap::new());
 
         let mut handles = vec![];
         for id in 0..n_threads {
@@ -72,8 +72,7 @@ macro_rules! test_code {
             let seed = $seed + ((id as u128) * 100);
 
             let (map, dmap) = (map.clone(), Arc::clone(&dmap));
-            let h =
-                thread::spawn(move || with_dashmap(id, seed, modul, n_ops, map, dmap));
+            let h = thread::spawn(move || with_dashmap(id, seed, n_ops, map, dmap));
 
             handles.push(h);
         }
@@ -82,14 +81,35 @@ macro_rules! test_code {
             handle.join().unwrap();
         }
 
+        println!(
+            "test_dash2_map_{} Validate .... {:?}",
+            stringify!($keytype),
+            map.validate()
+        );
+
+        let mut mismatch_count = 0;
         for item in dmap.iter() {
             let (key, val) = item.pair();
-            assert_eq!(map.get(key), Some(*val), "for key {}", key);
+            if map.get(key) != Some(*val) {
+                mismatch_count += 1;
+            }
         }
 
-        println!("len {}", map.len());
-        assert_eq!(map.len(), dmap.len());
-        println!("Validate .... {:?}", map.validate());
+        println!(
+            "test_dash2_map_{} len map:{} dash:{}",
+            stringify!($keytype),
+            map.len(),
+            dmap.len()
+        );
+
+        println!(
+            "test_dash2_map_{} mismatch_count:{}",
+            stringify!($keytype),
+            mismatch_count
+        );
+
+        mismatch_count += if map.len() != dmap.len() { 1 } else { 0 };
+        assert!(mismatch_count == 0);
 
         // map.print();
 
@@ -137,10 +157,9 @@ fn test_with_dash_map_u128() {
 fn with_dashmap<K>(
     id: K,
     seed: u128,
-    modul: K,
     n_ops: usize,
-    mut map: Map<K, u64>,
-    dmap: Arc<DashMap<K, u64>>,
+    mut map: Map<K, u128>,
+    dmap: Arc<DashMap<K, u128>>,
 ) where
     K: Key,
 {
@@ -153,64 +172,52 @@ fn with_dashmap<K>(
         let mut uns = Unstructured::new(&bytes);
 
         let mut op: Op<K> = uns.arbitrary().unwrap();
-        op = op.adjust_key(id, modul);
+        op = op.adjust_op();
         // println!("{}-op -- {:?}", id, op);
         match op.clone() {
             Op::Set(key, value) => {
                 // map.print();
 
-                let map_val = map.set(key, value);
-                let dmap_val = dmap.insert(key, value);
-                if map_val != dmap_val {
-                    map.print();
-                }
+                let map_val = map.set(key, value).map(|x| x as i128);
+                let _dmap_val = dmap.insert(key, value).map(|x| x as i128);
 
                 counts[0][0] += 1;
                 counts[0][1] += if map_val.is_none() { 0 } else { 1 };
 
-                assert_eq!(map_val, dmap_val, "key {}", key);
+                // assert_eq!(map_val, dmap_val, "key {}", key);
             }
             Op::Remove(key) => {
                 // map.print();
 
                 let map_val = map.remove(&key);
-                let dmap_val = dmap.remove(&key).map(|(_, v)| v);
-                if map_val != dmap_val {
-                    map.print();
-                }
+                let _dmap_val = dmap.remove(&key).map(|(_, v)| v);
 
                 counts[1][0] += 1;
                 counts[1][1] += if map_val.is_none() { 0 } else { 1 };
 
-                assert_eq!(map_val, dmap_val, "key {}", key);
+                // assert_eq!(map_val, dmap_val, "key {}", key);
             }
             Op::Get(key) => {
                 // map.print();
 
-                let map_val = map.get(&key);
-                let dmap_val = dmap.get(&key).map(|x| *x);
-                if map_val != dmap_val {
-                    map.print();
-                }
+                let map_val = map.get(&key).map(|x| x as i128);
+                let _dmap_val = dmap.get(&key).map(|x| *x as i128);
 
                 counts[2][0] += 1;
                 counts[2][1] += if map_val.is_none() { 0 } else { 1 };
 
-                assert_eq!(map_val, dmap_val, "key {}", key);
+                // assert_eq!(map_val, dmap_val, "key {}", key);
             }
             Op::GetWith(key) => {
                 // map.print();
 
-                let map_val = map.get_with(&key, |v| *v);
-                let dmap_val = dmap.get(&key).map(|x| *x);
-                if map_val != dmap_val {
-                    map.print();
-                }
+                let map_val = map.get_with(&key, |v| *v).map(|x| x as i128);
+                let _dmap_val = dmap.get(&key).map(|x| *x as i128);
 
                 counts[2][0] += 1;
                 counts[2][1] += if map_val.is_none() { 0 } else { 1 };
 
-                assert_eq!(map_val, dmap_val, "key {}", key);
+                // assert_eq!(map_val, dmap_val, "key {}", key);
             }
         };
     }
@@ -225,7 +232,7 @@ where
 {
     Get(K),
     GetWith(K),
-    Set(K, u64),
+    Set(K, u128),
     Remove(K),
 }
 
@@ -233,24 +240,20 @@ impl<K> Op<K>
 where
     K: Key,
 {
-    fn adjust_key(self, id: K, modul: K) -> Self {
+    // we will allow same keys to be used by other threads, but use Instant::now()
+    // to track concurrency issues.
+    fn adjust_op(self) -> Self {
         match self {
-            Op::Get(key) => {
-                let key = (id * modul) + (key % modul);
-                Op::Get(key)
-            }
-            Op::GetWith(key) => {
-                let key = (id * modul) + (key % modul);
-                Op::GetWith(key)
-            }
-            Op::Set(key, value) => {
-                let key = (id * modul) + (key % modul);
+            Op::Get(key) => Op::Get(key),
+            Op::GetWith(key) => Op::GetWith(key),
+            Op::Set(key, _) => {
+                let value = time::SystemTime::now()
+                    .duration_since(time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
                 Op::Set(key, value)
             }
-            Op::Remove(key) => {
-                let key = (id * modul) + (key % modul);
-                Op::Remove(key)
-            }
+            Op::Remove(key) => Op::Remove(key),
         }
     }
 }
