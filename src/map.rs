@@ -67,14 +67,21 @@ macro_rules! gc_epoch {
         for e in $log.iter() {
             let thread_epoch = e.load(SeqCst);
             let thread_epoch = if thread_epoch == 0 {
+                // map's clone is dropped
                 gc_epoch
             } else if thread_epoch & ENTER_MASK == 0 {
+                // thread exited at thread_epoch
                 $seqno
             } else {
+                // ongoing access.
                 thread_epoch & EPOCH_MASK
             };
             gc_epoch = u64::min(gc_epoch, thread_epoch);
         }
+        // gc_epoch is
+        // a. either u64::MAX or,
+        // b. epoch at an ongoing access,
+        // c. current epoch, if there is no on-going access.
         gc_epoch
     }};
 }
@@ -318,6 +325,38 @@ impl<K, V, H> Map<K, V, H> {
     pub fn set_gc_period(&mut self, period: usize) -> &mut Self {
         self.gc_period = period;
         self
+    }
+
+    /// Return Map's clone id.
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Return current epoch across all threads/clones
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(SeqCst)
+    }
+
+    /// Return garbage collectible epoch. epoch is either u64::MAX, in which case all the
+    /// clones of this Map is dropped, or the safe minimum epoch where all allocations
+    /// that happed before epoch can be safely gargage collected
+    pub fn gc_epoch(&self, seqno: u64) -> u64 {
+        let mut gc_epoch = u64::MAX;
+        for e in self.access_log.iter() {
+            let thread_epoch = e.load(SeqCst);
+            let thread_epoch = if thread_epoch == 0 {
+                // map's clone is dropped
+                gc_epoch
+            } else if thread_epoch & ENTER_MASK == 0 {
+                // thread exited at thread_epoch
+                seqno
+            } else {
+                // ongoing access.
+                thread_epoch & EPOCH_MASK
+            };
+            gc_epoch = u64::min(gc_epoch, thread_epoch);
+        }
+        gc_epoch
     }
 
     /// Return the number of items indexed in the map. This may not be accurate due
@@ -693,9 +732,9 @@ where
         match node.as_mut() {
             Node::List { items } => {
                 items.clear();
-                unsafe { items.set_len(2) }; // **IMPORTANT**
-                items[0] = item;
-                items[1].clone_from(leaf);
+                // unsafe { items.set_len(2) }; // **IMPORTANT**
+                items.push(item);
+                items.push(leaf.clone());
                 #[cfg(freature = "compact")]
                 items.shrink_to_fit();
             }
@@ -918,6 +957,7 @@ where
 
         let new = Box::leak(node);
 
+        // println!("set_child");
         op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
@@ -957,6 +997,7 @@ where
 
         let new = Box::leak(node);
 
+        // println!("leaf_to_list");
         op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
@@ -985,6 +1026,7 @@ where
 
         let new = Box::leak(new_node);
 
+        // println!("set_trie_child");
         op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
@@ -1037,6 +1079,7 @@ where
 
         let new = Box::leak(node);
 
+        // println!("remove_child1");
         op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
@@ -1087,6 +1130,7 @@ where
 
         let new = Box::leak(node);
 
+        // println!("remove_child");
         op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
         op.cas.free_on_fail(gc::Mem::Node(new));
         op.cas.free_on_pass(gc::Mem::Node(op.old));
@@ -1114,12 +1158,14 @@ where
                         let next_node_ptr = next_inode.node.load(SeqCst);
                         match unsafe { next_node_ptr.as_ref().unwrap() } {
                             Node::Tomb { item: None } => {
+                                // println!("compact_trie_from");
                                 op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
                                 op.cas.free_on_pass(gc::Mem::Node(next_node_ptr));
                                 childs.remove(n);
                                 node.hamming_reset(w)
                             }
                             Node::Tomb { item: Some(item) } => {
+                                // println!("compact_trie_from");
                                 op.cas.free_on_pass(gc::Mem::Child(old_child_ptr));
                                 op.cas.free_on_pass(gc::Mem::Node(next_node_ptr));
                                 let new_ptr = Child::new_leaf(item.clone(), op.cas);
@@ -1145,6 +1191,7 @@ where
                     let other_child_ptr = childs[0].load(SeqCst);
                     match unsafe { other_child_ptr.as_ref().unwrap() } {
                         Child::Leaf(m) => {
+                            // println!("compact_trie_from");
                             op.cas.free_on_pass(gc::Mem::Child(other_child_ptr));
                             let item = Some(m.clone());
                             *node = Node::Tomb { item };
@@ -1256,6 +1303,7 @@ impl<K, V, H> Map<K, V, H> {
         let mut inode = unsafe { self.root.load(SeqCst).as_ref().unwrap() };
         let mut wss = &ws[..];
         // println!("{}", format_ws!("get outer ws:{:?}", wss));
+        // println!("get_with seqno:{}", seqno);
 
         let res = loop {
             let old = inode.node.load(SeqCst);
@@ -1279,7 +1327,7 @@ impl<K, V, H> Map<K, V, H> {
                             match unsafe { ptr.as_ref().unwrap() } {
                                 Child::Deep(next_inode) => next_inode,
                                 Child::Leaf(item) if item.key.borrow() == key => {
-                                    break Some(callb(&item.value))
+                                    break Some(callb(&item.value));
                                 }
                                 Child::Leaf(_) => break None,
                                 Child::None => unreachable!(),
@@ -1551,7 +1599,7 @@ impl<K, V, H> Map<K, V, H> {
                                 let lcp = childs[j].load(SeqCst);
                                 match unsafe { lcp.as_ref().unwrap() } {
                                     Child::Leaf(m) => {
-                                        // println!("remove3 old value {:?}", ov);
+                                        // println!("remove3 old value");
 
                                         op.cas.free_on_pass(gc::Mem::Child(lcp));
                                         op.cas.free_on_pass(gc::Mem::Child(ocp));

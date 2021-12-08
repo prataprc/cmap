@@ -221,13 +221,14 @@ impl<K, V> Cas<K, V> {
 
     // allocate a child from the child pool.
     pub fn alloc_child(&mut self) -> Box<Child<K, V>> {
-        match self.child_pool.pop() {
+        let child = match self.child_pool.pop() {
             Some(val) => val,
             None => {
                 self.n_allocs += 1;
                 Box::new(Child::default())
             }
-        }
+        };
+        child
     }
 
     // allocate reclaim instance from the reclaim pool.
@@ -252,7 +253,10 @@ impl<K, V> Cas<K, V> {
                 items.clear();
                 &mut self.node_list_pool
             }
-            Node::Tomb { .. } => &mut self.node_tomb_pool,
+            Node::Tomb { item } => {
+                *item = None;
+                &mut self.node_tomb_pool
+            }
         };
         if pool.len() < MAX_POOL_SIZE {
             pool.push(node)
@@ -261,7 +265,9 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    fn free_child(&mut self, child: Box<Child<K, V>>) {
+    fn free_child(&mut self, mut child: Box<Child<K, V>>) {
+        *(child.as_mut()) = Child::None;
+
         if self.child_pool.len() < MAX_POOL_SIZE {
             self.child_pool.push(child)
         } else {
@@ -269,7 +275,10 @@ impl<K, V> Cas<K, V> {
         }
     }
 
-    fn free_reclaim(&mut self, reclaim: Box<Reclaim<K, V>>) {
+    fn free_reclaim(&mut self, mut reclaim: Box<Reclaim<K, V>>) {
+        reclaim.epoch = None;
+        reclaim.items.clear();
+
         if self.reclaim_pool.len() < MAX_POOL_SIZE {
             self.reclaim_pool.push(reclaim)
         } else {
@@ -365,6 +374,15 @@ pub(crate) struct Reclaim<K, V> {
     items: Vec<OwnedMem<K, V>>,
 }
 
+impl<K, V> Default for Reclaim<K, V> {
+    fn default() -> Self {
+        Reclaim {
+            epoch: None,
+            items: Vec::with_capacity(2),
+        }
+    }
+}
+
 impl<K, V> fmt::Debug for Reclaim<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
         let items = self
@@ -378,15 +396,6 @@ impl<K, V> fmt::Debug for Reclaim<K, V> {
             .collect::<Vec<&str>>()
             .join("");
         write!(f, "epoch:{:?} items:{:?}", self.epoch, items)
-    }
-}
-
-impl<K, V> Default for Reclaim<K, V> {
-    fn default() -> Self {
-        Reclaim {
-            epoch: None,
-            items: Vec::with_capacity(2),
-        }
     }
 }
 
