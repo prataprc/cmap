@@ -221,14 +221,13 @@ impl<K, V> Cas<K, V> {
 
     // allocate a child from the child pool.
     pub fn alloc_child(&mut self) -> Box<Child<K, V>> {
-        let child = match self.child_pool.pop() {
+        match self.child_pool.pop() {
             Some(val) => val,
             None => {
                 self.n_allocs += 1;
                 Box::new(Child::default())
             }
-        };
-        child
+        }
     }
 
     // allocate reclaim instance from the reclaim pool.
