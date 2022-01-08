@@ -1,5 +1,5 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
-use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
+use rand::{prelude::random, rngs::StdRng, Rng, SeedableRng};
 
 use std::{cmp, collections::BTreeMap, mem, thread};
 
@@ -103,10 +103,8 @@ fn test_print_sizing() {
 
 #[test]
 fn test_with_btree_map() {
-    let seed: u128 =
-        [93808280188270876915817886943766741423, random()][random::<usize>() % 2];
-    // let seed: u128 = 93808280188270876915817886943766741423;
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let seed: u64 = random();
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let key_max = [1024 * 1024 * 1024, Ky::MAX, 256, 16, 1024][rng.gen::<usize>() % 5];
     let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
@@ -131,7 +129,7 @@ fn test_with_btree_map() {
 
     let mut handles = vec![];
     for id in 0..n_threads {
-        let seed = seed + ((id as u128) * 100);
+        let seed = seed + ((id as u64) * 100);
 
         let map = map.clone();
         let btmap: BTreeMap<Ky, u64> = BTreeMap::new();
@@ -162,13 +160,13 @@ fn test_with_btree_map() {
 
 fn with_btreemap(
     id: Ky,
-    seed: u128,
+    seed: u64,
     modul: Ky,
     n_ops: usize,
     mut map: Map<Ky, u64>,
     mut btmap: BTreeMap<Ky, u64>,
 ) -> BTreeMap<Ky, u64> {
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let mut counts = [[0_usize; 2]; 3];
 

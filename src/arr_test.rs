@@ -1,5 +1,5 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
-use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
+use rand::{prelude::random, rngs::StdRng, Rng, SeedableRng};
 
 use std::{cmp, mem, thread};
 
@@ -7,9 +7,8 @@ use super::*;
 
 #[test]
 fn test_with_arr_map() {
-    let seed: u128 = random();
-    // let seed: u128 = 268219686229904906077089108983355143992;
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let seed: u64 = random();
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let key_max = [10 * 1024 * 1024, 256, 16, 1024][rng.gen::<usize>() % 4];
     let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
@@ -34,7 +33,7 @@ fn test_with_arr_map() {
 
     let mut handles = vec![];
     for id in 0..n_threads {
-        let seed = seed + ((id as u128) * 100);
+        let seed = seed + ((id as u64) * 100);
 
         let map = map.clone();
         let h = thread::spawn(move || with_arr(id, seed, modul, n_ops, map));
@@ -68,12 +67,12 @@ fn test_with_arr_map() {
 
 fn with_arr(
     id: u32,
-    seed: u128,
+    seed: u64,
     modul: u32,
     n_ops: usize,
     mut map: Map<u32, u32>,
 ) -> Vec<u32> {
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let mut rng = StdRng::seed_from_u64(seed);
     let mut arr = vec![0_u32; modul as usize];
 
     let mut counts = [[0_usize; 2]; 3];

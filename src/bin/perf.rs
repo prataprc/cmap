@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
+use rand::{prelude::random, rngs::StdRng, Rng, SeedableRng};
 use structopt::StructOpt;
 
 use std::{cmp, mem, sync::Arc, thread, time};
@@ -12,7 +12,7 @@ type Ky = u32;
 #[derive(Clone, StructOpt)]
 pub struct Opt {
     #[structopt(long = "seed")]
-    seed: Option<u128>,
+    seed: Option<u64>,
 
     #[structopt(long = "loads", default_value = "1000000")] // default 1M
     loads: usize,
@@ -55,7 +55,7 @@ fn main() {
 
 fn cmap(opts: Opt) {
     let seed = opts.seed.unwrap_or_else(random);
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let mut map: Map<Ky, u64, _> = Map::new(opts.threads + 1, U32Hasher::default());
     map.print_sizing();
@@ -80,7 +80,7 @@ fn cmap(opts: Opt) {
     let mut handles = vec![];
     for j in 0..opts.threads {
         let (opts, map) = (opts.clone(), map.clone());
-        let seed = seed + ((j as u128) * 100);
+        let seed = seed + ((j as u64) * 100);
         let h = thread::spawn(move || cmap_incremental(j, seed, opts, map));
         handles.push(h);
     }
@@ -97,8 +97,8 @@ fn cmap(opts: Opt) {
     mem::drop(map)
 }
 
-fn cmap_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Hasher>) {
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+fn cmap_incremental(j: usize, seed: u64, opts: Opt, mut map: Map<Ky, u64, U32Hasher>) {
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
@@ -133,7 +133,7 @@ fn cmap_incremental(j: usize, seed: u128, opts: Opt, mut map: Map<Ky, u64, U32Ha
 
 fn dash_map(opts: Opt) {
     let seed = opts.seed.unwrap_or_else(random);
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let dmap: Arc<DashMap<Ky, u64>> = Arc::new(DashMap::new());
     let key_max = cmp::min(Ky::MAX as usize, opts.loads) as Ky;
@@ -156,7 +156,7 @@ fn dash_map(opts: Opt) {
     let mut handles = vec![];
     for j in 0..opts.threads {
         let (opts, dmap) = (opts.clone(), Arc::clone(&dmap));
-        let seed = seed + ((j as u128) * 100);
+        let seed = seed + ((j as u64) * 100);
         let h = thread::spawn(move || dmap_incremental(j, seed, opts, dmap));
         handles.push(h);
     }
@@ -169,8 +169,8 @@ fn dash_map(opts: Opt) {
     mem::drop(dmap);
 }
 
-fn dmap_incremental(j: usize, seed: u128, opts: Opt, dmap: Arc<DashMap<Ky, u64>>) {
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+fn dmap_incremental(j: usize, seed: u64, opts: Opt, dmap: Arc<DashMap<Ky, u64>>) {
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);
@@ -209,7 +209,7 @@ fn flurry_map(opts: Opt) {
     use flurry::HashMap;
 
     let seed = opts.seed.unwrap_or_else(random);
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let fmap: Arc<HashMap<Ky, u64>> = Arc::new(HashMap::new());
     let key_max = cmp::min(Ky::MAX as usize, opts.loads) as Ky;
@@ -232,7 +232,7 @@ fn flurry_map(opts: Opt) {
     let mut handles = vec![];
     for j in 0..opts.threads {
         let (opts, fmap) = (opts.clone(), Arc::clone(&fmap));
-        let seed = seed + ((j as u128) * 100);
+        let seed = seed + ((j as u64) * 100);
         let h = thread::spawn(move || fmap_incremental(j, seed, opts, fmap));
         handles.push(h);
     }
@@ -245,13 +245,8 @@ fn flurry_map(opts: Opt) {
     mem::drop(fmap)
 }
 
-fn fmap_incremental(
-    j: usize,
-    seed: u128,
-    opts: Opt,
-    fmap: Arc<flurry::HashMap<Ky, u64>>,
-) {
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+fn fmap_incremental(j: usize, seed: u64, opts: Opt, fmap: Arc<flurry::HashMap<Ky, u64>>) {
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let start = time::Instant::now();
     let (mut sets, mut rems, mut gets) = (opts.sets, opts.rems, opts.gets);

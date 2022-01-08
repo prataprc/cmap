@@ -1,6 +1,6 @@
 use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use dashmap::DashMap;
-use rand::{prelude::random, rngs::SmallRng, Rng, SeedableRng};
+use rand::{prelude::random, rngs::StdRng, Rng, SeedableRng};
 
 use std::{
     cmp, fmt, mem,
@@ -31,7 +31,7 @@ impl Key for u128 {}
 
 macro_rules! test_code {
     ($seed:expr, $keytype:ty) => {{
-        let mut rng = SmallRng::from_seed($seed.to_le_bytes());
+        let mut rng = StdRng::seed_from_u64($seed);
 
         let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
         let key_max = [
@@ -69,7 +69,7 @@ macro_rules! test_code {
         let mut handles = vec![];
         for id in 0..n_threads {
             let id = id as $keytype;
-            let seed = $seed + ((id as u128) * 100);
+            let seed = $seed + ((id as u64) * 100);
 
             let (map, dmap) = (map.clone(), Arc::clone(&dmap));
             let h =
@@ -104,43 +104,35 @@ macro_rules! test_code {
 
 #[test]
 fn test_with_dash_map_u8() {
-    let seed: u128 =
-        [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
-    // let seed: u128 = 221544245499661277858524746728600114414;
+    let seed: u64 = random();
 
     test_code!(seed, u8);
 }
 
 #[test]
 fn test_with_dash_map_u32() {
-    let seed: u128 =
-        [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
-    // let seed: u128 = 221544245499661277858524746728600114414;
+    let seed: u64 = random();
 
     test_code!(seed, u32);
 }
 
 #[test]
 fn test_with_dash_map_u64() {
-    let seed: u128 =
-        [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
-    // let seed: u128 = 221544245499661277858524746728600114414;
+    let seed: u64 = random();
 
     test_code!(seed, u64);
 }
 
 #[test]
 fn test_with_dash_map_u128() {
-    let seed: u128 =
-        [221544245499661277858524746728600114414, random()][random::<usize>() % 2];
-    // let seed: u128 = 221544245499661277858524746728600114414;
+    let seed: u64 = random();
 
     test_code!(seed, u128);
 }
 
 fn with_dashmap<K>(
     id: K,
-    seed: u128,
+    seed: u64,
     modul: K,
     n_ops: usize,
     mut map: Map<K, u64>,
@@ -148,7 +140,7 @@ fn with_dashmap<K>(
 ) where
     K: Key,
 {
-    let mut rng = SmallRng::from_seed(seed.to_le_bytes());
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let mut counts = [[0_usize; 2]; 3];
 
