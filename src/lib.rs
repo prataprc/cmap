@@ -65,7 +65,6 @@
 
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
-#![feature(destructuring_assignment)]
 
 #[allow(unused_imports)]
 use std::hash::BuildHasher;

@@ -24,7 +24,7 @@ required-features = ["perf"]
 [dependencies]
 dashmap = { version = "4.0.2", optional = true }
 flurry = { version = "0.3.1", optional = true }
-fasthash = "0.4.0"
+cityhash-rs = "1.0.0"
 rand = { version = "0.8.4", features = ["std_rng"], optional = true }
 structopt = { version = "0.3.20", default-features = false, optional = true }
 

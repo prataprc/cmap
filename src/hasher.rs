@@ -4,53 +4,43 @@
 // * **[U32Hasher]**, can be used for [u32] type keys, where keys are directly
 //   returned as the hash digest.
 
-use fasthash::{
-    self,
-    city::crc::{Hash128, Hasher128},
-};
-
 use std::{
     convert::TryInto,
     hash::{BuildHasher, Hasher},
 };
 
 /// Type uses google's city hash to convert [Hash]able key into ``u32``.
-/// Refer [fasthash] for details.
+/// Refer [cityhash_rs] for details.
+#[derive(Clone, Copy, Default)]
 pub struct DefaultHasher {
-    hash_builder: Hash128,
-}
-
-impl Default for DefaultHasher {
-    fn default() -> Self {
-        DefaultHasher::new()
-    }
+    city_hash: u128,
 }
 
 impl DefaultHasher {
     pub fn new() -> DefaultHasher {
-        DefaultHasher {
-            hash_builder: Hash128,
-        }
-    }
-}
-
-impl Clone for DefaultHasher {
-    #[inline]
-    fn clone(&self) -> Self {
-        DefaultHasher {
-            hash_builder: Hash128,
-        }
+        DefaultHasher::default()
     }
 }
 
 impl BuildHasher for DefaultHasher {
-    type Hasher = Hasher128;
+    type Hasher = Self;
 
     #[inline]
-    fn build_hasher(&self) -> Self::Hasher {
-        self.hash_builder.build_hasher()
+    fn build_hasher(&self) -> Self {
+        self.clone()
     }
 }
+
+impl Hasher for DefaultHasher {
+    fn finish(&self) -> u64 {
+        ((self.city_hash >> 64) as u64) ^ ((self.city_hash & 0xFFFFFFFFFFFFFFFF) as u64)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.city_hash = cityhash_rs::cityhash_110_128(bytes);
+    }
+}
+
 
 /// Type implement [BuildHasher] optimized for ``u32`` key set.
 #[derive(Clone, Default)]
