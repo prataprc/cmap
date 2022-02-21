@@ -1311,7 +1311,7 @@ impl<K, V, H> Map<K, V, H> {
 
             let w = match wss.first() {
                 Some(w) => *w,
-                None => break node.as_value(key).map(|v| callb(v)),
+                None => break node.as_value(key).map(callb),
             };
             wss = &wss[1..];
             // println!("get loop w:{:x}", w);

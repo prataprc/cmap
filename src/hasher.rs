@@ -27,7 +27,7 @@ impl BuildHasher for DefaultHasher {
 
     #[inline]
     fn build_hasher(&self) -> Self {
-        self.clone()
+        *self
     }
 }
 
@@ -40,7 +40,6 @@ impl Hasher for DefaultHasher {
         self.city_hash = cityhash_rs::cityhash_110_128(bytes);
     }
 }
-
 
 /// Type implement [BuildHasher] optimized for ``u32`` key set.
 #[derive(Clone, Default)]
