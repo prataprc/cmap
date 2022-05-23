@@ -32,9 +32,9 @@
 //! increases when a `set` or `remove` access into the trie-structure _complete_.
 //!
 //! A note on `access_log`. It is an array of 64-bit sequence number that is atomically
-//! updated with current `epoch` for every `get`, `set`, `remove`. Most significant
-//! bit of the access log specifies whether the access is on-going and the remaining bits
-//! specifying the `epoch` at which the access started.
+//! updated with current `epoch` for every `get`, `set`, `remove`, per thread. Most
+//! significant bit of the access log specifies whether the access is on-going and the
+//! remaining bits specifying the `epoch` at which the access started.
 //!
 //! A note on `gc_epoch`. It is a 64-bit sequence number that is computed, for each
 //! gc-period, along the [Map::set] and [Map::remove] execution path. Additionally
@@ -57,13 +57,9 @@
 //!   self.reclaims list as ZERO.
 //!
 
-use std::{
-    fmt, ptr, result,
-    sync::{
-        atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst},
-        Arc,
-    },
-};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering::SeqCst};
+use std::sync::Arc;
+use std::{fmt, ptr, result};
 
 #[allow(unused_imports)]
 use crate::map::Map;

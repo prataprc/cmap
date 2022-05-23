@@ -63,9 +63,6 @@
 //! [ppom]: https://github.com/bnclabs/cmap
 //! [fasthash]: https://github.com/flier/rust-fasthash
 
-#![feature(unboxed_closures)]
-#![feature(fn_traits)]
-
 #[allow(unused_imports)]
 use std::hash::BuildHasher;
 use std::{error, fmt, result};
@@ -76,7 +73,7 @@ use std::{error, fmt, result};
 ///
 /// ```ignore
 /// use crate::Error;
-/// err_at!(ParseError, msg: format!("bad argument"));
+/// err_at!(ParseError, msg: "bad argument");
 /// ```
 ///
 /// ```ignore
@@ -86,7 +83,7 @@ use std::{error, fmt, result};
 ///
 /// ```ignore
 /// use crate::Error;
-/// err_at!(ParseError, std::fs::read(file_path), format!("read failed"));
+/// err_at!(ParseError, std::fs::read(file_path), "read failed");
 /// ```
 ///
 #[macro_export]

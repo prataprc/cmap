@@ -19,7 +19,7 @@
 //! before dropping the root and its trie, following cleanup is performed
 //!
 //! * Map::access_log is set to ZERO.
-//! * Pending reclaims from the `Cas` instance, which is not shared between Map's clone,
+//! * Pending reclaims from the `gc::Cas` instance, which is not shared between Map's clone,
 //!   are garbage collected, Refer to [gc] module for details on how epochal garbage
 //!   collection works.
 //! * stats like `n_pool`, `n_allocs` and `n_frees` are updated from the current clone's
@@ -27,23 +27,13 @@
 //!
 //! Actual drop is executed by Node::dropped() function
 
-use std::{
-    borrow::Borrow,
-    fmt::Debug,
-    hash::{BuildHasher, Hash, Hasher},
-    mem,
-    ops::{Add, Deref},
-    sync::{
-        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst},
-        Arc, Mutex,
-    },
-    thread, time,
-};
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::ops::{Add, Deref};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, Mutex};
+use std::{borrow::Borrow, fmt::Debug, mem, thread, time};
 
-use crate::{
-    gc::{self, Cas},
-    DefaultHasher,
-};
+use crate::{gc, DefaultHasher};
 
 const SLOT_MASK: u32 = 0xF;
 const ENTER_MASK: u64 = 0x8000000000000000;
@@ -725,7 +715,7 @@ where
     fn new_bi_list(
         item: Item<K, V>,
         leaf: &Item<K, V>,
-        cas: &mut Cas<K, V>,
+        cas: &mut gc::Cas<K, V>,
     ) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('l');
 
@@ -749,7 +739,7 @@ where
     fn new_list_with(
         olds: &[Item<K, V>],
         item: Item<K, V>,
-        cas: &mut Cas<K, V>,
+        cas: &mut gc::Cas<K, V>,
     ) -> (*mut Node<K, V>, Option<V>)
     where
         K: PartialEq,
@@ -776,7 +766,7 @@ where
     fn new_list_without(
         olds: &[Item<K, V>],
         i: usize,
-        cas: &mut Cas<K, V>,
+        cas: &mut gc::Cas<K, V>,
     ) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('l');
 
@@ -796,7 +786,7 @@ where
         node_ptr
     }
 
-    fn new_tomb(nitem: &Item<K, V>, cas: &mut Cas<K, V>) -> *mut Node<K, V> {
+    fn new_tomb(nitem: &Item<K, V>, cas: &mut gc::Cas<K, V>) -> *mut Node<K, V> {
         let mut node = cas.alloc_node('b');
 
         *node = Node::Tomb {
@@ -1725,7 +1715,7 @@ struct CasOp<'a, K, V> {
     epoch: &'a Arc<AtomicU64>,
     inode: &'a In<K, V>,
     old: *mut Node<K, V>,
-    cas: &'a mut Cas<K, V>,
+    cas: &'a mut gc::Cas<K, V>,
 }
 
 #[derive(PartialEq, Debug)]

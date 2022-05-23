@@ -1,29 +1,27 @@
-# Package not ready for stable.
-
 build:
 	# ... build ...
-	# TODO: cargo +stable build
-	# TODO: cargo +stable build --features=compact
+	cargo +stable build
+	cargo +stable build --features=compact
 	cargo +nightly build
 	cargo +nightly build --features=compact
 	#
 	# ... test ...
-	# TODO: cargo +stable test --no-run
-	# TODO: cargo +stable test --features=compact --no-run
+	cargo +stable test --no-run
+	cargo +stable test --features=compact --no-run
 	cargo +nightly test --no-run
 	cargo +nightly test --features=compact --no-run
 	#
 	# ... bench ...
-	# TODO: cargo +stable bench --no-run
+	cargo +stable bench --no-run
 	cargo +nightly bench --no-run
 	#
 	# ... doc ...
-	# TODO: cargo +stable doc
+	cargo +stable doc
 	cargo +nightly doc
 	#
 	# ... bins ...
-	# TODO: cargo +stable build --release --bin perf --features=perf
-	# TODO: cargo +stable build --release --bin perf --features=perf,compact
+	cargo +stable build --release --bin perf --features=perf
+	cargo +stable build --release --bin perf --features=perf,compact
 	cargo +nightly build --release --bin perf --features=perf
 	cargo +nightly build --release --bin perf --features=perf,compact
 	#
@@ -32,12 +30,12 @@ build:
 
 test:
 	# ... test ...
-	# TODO: cargo +stable test
+	cargo +stable test
 	cargo +nightly test
 
 bench:
 	# ... bench ...
-	# TODO: cargo +stable bench
+	cargo +stable bench
 	cargo +nightly bench
 
 flamegraph:

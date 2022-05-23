@@ -11,9 +11,9 @@ fn test_with_arr_map() {
     let mut rng = StdRng::seed_from_u64(seed);
 
     let key_max = [10 * 1024 * 1024, 256, 16, 1024][rng.gen::<usize>() % 4];
-    let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
+    let n_ops = [1_000, 1_000_000][rng.gen::<usize>() % 2];
     let n_threads = {
-        let n = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
+        let n = [1, 2, 4, 8, 16][rng.gen::<usize>() % 5];
         cmp::min(key_max, n)
     };
     let gc_period = [0, 1, 16, 32, 256, 1024][rng.gen::<usize>() % 6];

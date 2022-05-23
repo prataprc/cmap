@@ -2,11 +2,8 @@ use arbitrary::{self, unstructured::Unstructured, Arbitrary};
 use dashmap::DashMap;
 use rand::{prelude::random, rngs::StdRng, Rng, SeedableRng};
 
-use std::{
-    cmp, fmt, mem,
-    ops::{Add, Mul, Rem},
-    thread,
-};
+use std::ops::{Add, Mul, Rem};
+use std::{cmp, fmt, mem, thread};
 
 use super::*;
 
@@ -33,7 +30,7 @@ macro_rules! test_code {
     ($seed:expr, $keytype:ty) => {{
         let mut rng = StdRng::seed_from_u64($seed);
 
-        let n_ops = [1_000, 1_000_000, 10_000_000][rng.gen::<usize>() % 3];
+        let n_ops = [1_000, 1_000_000][rng.gen::<usize>() % 2];
         let key_max = [
             (((1024_u64 * 1024 * 1024) - 1) & ((<$keytype>::MAX - 1) as u64)) as $keytype,
             <$keytype>::MAX,
@@ -42,7 +39,7 @@ macro_rules! test_code {
             ((1024_u64 - 1) & ((<$keytype>::MAX - 1) as u64)) as $keytype,
         ][rng.gen::<usize>() % 5];
         let n_threads = {
-            let n = [1, 2, 4, 8, 16, 32, 64][rng.gen::<usize>() % 7];
+            let n = [1, 2, 4, 8, 16][rng.gen::<usize>() % 5];
             cmp::min(key_max, n)
         };
         let gc_period = [0, 1, 16, 32, 256, 1024][rng.gen::<usize>() % 6];
