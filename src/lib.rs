@@ -113,14 +113,6 @@ macro_rules! err_at {
     }};
 }
 
-// mod entry;
-pub mod gc;
-mod hasher;
-pub mod map;
-
-pub use hasher::{DefaultHasher, U32Hasher};
-pub use map::Map;
-
 /// Error variants that can be returned by this package's API.
 ///
 /// Each variant carries a prefix, typically identifying the
@@ -148,6 +140,14 @@ impl fmt::Debug for Error {
 }
 
 impl error::Error for Error {}
+
+// mod entry;
+pub mod gc;
+mod hasher;
+pub mod map;
+
+pub use hasher::{DefaultHasher, U32Hasher};
+pub use map::Map;
 
 /// Type alias for Result return type, used by this package.
 pub type Result<T> = result::Result<T, Error>;
