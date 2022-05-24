@@ -8,6 +8,7 @@ use std::convert::TryInto;
 use std::hash::{BuildHasher, Hasher};
 
 /// Type uses google's city hash to convert [Hash]able key into ``u32``.
+///
 /// Refer [cityhash_rs] for details.
 #[derive(Clone, Copy, Default)]
 pub struct DefaultHasher {
