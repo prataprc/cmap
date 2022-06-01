@@ -68,7 +68,7 @@ macro_rules! test_code {
             let id = id as $keytype;
             let seed = $seed + ((id as u64) * 100);
 
-            let (map, dmap) = (map.clone(), Arc::clone(&dmap));
+            let (map, dmap) = (map.cloned(), Arc::clone(&dmap));
             let h =
                 thread::spawn(move || with_dashmap(id, seed, modul, n_ops, map, dmap));
 

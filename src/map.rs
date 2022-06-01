@@ -19,9 +19,9 @@
 //! before dropping the root and its trie, following cleanup is performed
 //!
 //! * Map::access_log is set to ZERO.
-//! * Pending reclaims from the `gc::Cas` instance, which is not shared between Map's clone,
-//!   are garbage collected, Refer to [gc] module for details on how epochal garbage
-//!   collection works.
+//! * Pending reclaims from the `gc::Cas` instance, which is not shared
+//!   between Map's clone, are garbage collected, Refer to [gc] module for details
+//!   on how epochal garbage collection works.
 //! * stats like `n_pool`, `n_allocs` and `n_frees` are updated from the current clone's
 //!   `cas` instance.
 //!
@@ -226,16 +226,6 @@ impl<K, V, H> Drop for Map<K, V, H> {
     }
 }
 
-impl<K, V, H> Clone for Map<K, V, H> {
-    fn clone(&self) -> Map<K, V, H> {
-        self.map_pool
-            .lock()
-            .expect("map lock poisoned")
-            .pop()
-            .unwrap()
-    }
-}
-
 impl<K, V, H> Map<K, V, H> {
     /// Create a new instance of map. All the clones created from this map will
     /// share its internal data structure through atomic serialization.
@@ -280,6 +270,16 @@ impl<K, V, H> Map<K, V, H> {
         map.create_map_pool((1..concurrency).collect());
 
         map
+    }
+
+    /// Get a pre-created a clone of Map instance. Cloned instances are thread-safe
+    /// and can be use across threads to share the same underlying map.
+    pub fn cloned(&self) -> Map<K, V, H> {
+        self.map_pool
+            .lock()
+            .expect("map lock poisoned")
+            .pop()
+            .unwrap()
     }
 
     fn create_map_pool(&self, ids: Vec<usize>)
@@ -1276,12 +1276,12 @@ impl<K, V, H> Map<K, V, H> {
         res
     }
 
-    pub fn get_with<Q, F, T>(&self, key: &Q, callb: F) -> Option<T>
+    pub fn get_with<Q, F, T>(&self, key: &Q, mut callb: F) -> Option<T>
     where
         K: Borrow<Q>,
         Q: PartialEq + Hash + ?Sized,
         H: BuildHasher,
-        F: Fn(&V) -> T,
+        F: FnMut(&V) -> T,
     {
         let seqno = self.epoch.load(SeqCst);
         self.access_log[self.id].store(seqno | ENTER_MASK, SeqCst);

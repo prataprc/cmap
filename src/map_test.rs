@@ -131,7 +131,7 @@ fn test_with_btree_map() {
     for id in 0..n_threads {
         let seed = seed + ((id as u64) * 100);
 
-        let map = map.clone();
+        let map = map.cloned();
         let btmap: BTreeMap<Ky, u64> = BTreeMap::new();
         let h = thread::spawn(move || with_btreemap(id, seed, modul, n_ops, map, btmap));
 

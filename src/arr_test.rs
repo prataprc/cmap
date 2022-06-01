@@ -35,7 +35,7 @@ fn test_with_arr_map() {
     for id in 0..n_threads {
         let seed = seed + ((id as u64) * 100);
 
-        let map = map.clone();
+        let map = map.cloned();
         let h = thread::spawn(move || with_arr(id, seed, modul, n_ops, map));
 
         handles.push(h);
